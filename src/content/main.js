@@ -21,6 +21,54 @@
 		}
 	}
 
+	async function getOrgId() {
+		if (currentOrgId) return currentOrgId;
+
+		const fromCookie = getOrgIdFromCookie();
+		if (fromCookie) {
+			currentOrgId = fromCookie;
+			return currentOrgId;
+		}
+
+		try {
+			const lsOrg = localStorage.getItem('lastActiveOrg') || localStorage.getItem('currentOrganizationId');
+			if (lsOrg) {
+				currentOrgId = lsOrg;
+				return currentOrgId;
+			}
+		} catch {}
+
+		try {
+			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+				const stored = await new Promise((r) => chrome.storage.local.get(['claude_last_org_id'], r));
+				if (stored?.claude_last_org_id) {
+					currentOrgId = stored.claude_last_org_id;
+					return currentOrgId;
+				}
+			}
+		} catch {}
+
+		try {
+			const res = await fetch('https://claude.ai/api/organizations', { credentials: 'include' });
+			if (res.ok) {
+				const orgs = await res.json();
+				if (Array.isArray(orgs) && orgs.length > 0) {
+					const activeOrg = orgs.find((o) => o?.active) || orgs[0];
+					const id = activeOrg?.id || activeOrg?.uuid;
+					if (id) {
+						currentOrgId = id;
+						if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+							chrome.storage.local.set({ claude_last_org_id: id });
+						}
+						return currentOrgId;
+					}
+				}
+			}
+		} catch {}
+
+		return null;
+	}
+
 	/**
 	 * Wait for an element to appear in the DOM using MutationObserver.
 	 * More efficient than polling - reacts immediately when element appears.
@@ -45,7 +93,18 @@
 				}
 			});
 
-			observer.observe(document.body, { childList: true, subtree: true });
+			const startObserving = () => {
+				const target = document.body || document.documentElement;
+				if (target) {
+					observer.observe(target, { childList: true, subtree: true });
+				}
+			};
+
+			if (document.body || document.documentElement) {
+				startObserving();
+			} else {
+				window.addEventListener('DOMContentLoaded', startObserving, { once: true });
+			}
 
 			if (timeoutMs) {
 				timeoutId = setTimeout(() => {
@@ -142,6 +201,7 @@
 		if (!normalized) return;
 		const now = Date.now();
 		usageState = normalized;
+		persistUsage(normalized, currentOrgId || getOrgIdFromCookie());
 		lastUsageUpdateMs = now;
 		if (source === 'sse') lastUsageSseMs = now;
 		// Cache parsed timestamps to avoid Date.parse() every tick
@@ -156,24 +216,93 @@
 		}
 	}
 
+	// Persist last usage snapshot so bars survive reloads (the /usage endpoint
+	// returns null windows on free plan until the next message streams message_limit).
+	function persistUsage(normalized, orgId) {
+		try {
+			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+				chrome.storage.local.set({ claude_usage_state: { orgId, usage: normalized } });
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	function restoreCachedUsage() {
+		return new Promise((resolve) => {
+			try {
+				if (typeof chrome === 'undefined' || !chrome.storage?.local) return resolve();
+				chrome.storage.local.get(['claude_usage_state'], (result) => {
+					const entry = result?.claude_usage_state;
+					const cached = entry?.usage;
+					if (cached && entry.orgId === getOrgIdFromCookie() && (cached.five_hour || cached.seven_day)) {
+						resolve(cached);
+					} else {
+						resolve();
+					}
+				});
+			} catch {
+				resolve();
+			}
+		});
+	}
+
+	function clearPersistedUsage() {
+		try {
+			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+				chrome.storage.local.remove('claude_usage_state');
+			}
+		} catch {
+			// ignore
+		}
+	}
+
 	async function refreshUsage() {
 		await bridgeReady;
-		const orgId = currentOrgId || getOrgIdFromCookie();
+		const orgId = await getOrgId();
 		if (!orgId) return;
 		updateOrgIdIfNeeded(orgId);
 
 		if (usageFetchInFlight) return;
 		usageFetchInFlight = true;
-		let raw;
+		let raw = null;
 		try {
 			raw = await CC.bridge.requestUsage(orgId);
 		} catch {
-			return;
+			// Bridge failed or timed out; try direct fetch fallback
+			try {
+				const res = await fetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
+					credentials: 'include'
+				});
+				if (res.ok) {
+					raw = await res.json();
+				}
+			} catch {}
 		} finally {
 			usageFetchInFlight = false;
 		}
 
+		if (!raw) return;
+
 		const parsed = parseUsageFromUsageEndpoint(raw);
+
+		// Endpoint reachable but reports no windows. Only clear when nothing is
+		// live (free plan returns nulls even mid-window while SSE data is fresh).
+		if (raw && typeof raw === 'object' && !parsed) {
+			const nowMs = Date.now();
+			const hasLiveWindow =
+				(usageResetMs.five_hour && nowMs < usageResetMs.five_hour) ||
+				(usageResetMs.seven_day && nowMs < usageResetMs.seven_day);
+			if (!hasLiveWindow) {
+				usageState = null;
+				usageResetMs.five_hour = null;
+				usageResetMs.seven_day = null;
+				clearPersistedUsage();
+				ui.setUsage({});
+			}
+			return;
+		}
+
 		applyUsageUpdate(parsed, 'usage');
 	}
 
@@ -184,14 +313,22 @@
 			return;
 		}
 
-		const orgId = currentOrgId || getOrgIdFromCookie();
+		const orgId = await getOrgId();
 		if (!orgId) return;
 		updateOrgIdIfNeeded(orgId);
 
 		try {
 			await CC.bridge.requestConversation(orgId, currentConversationId);
 		} catch {
-			// ignore
+			// Bridge failed or timed out; try direct fetch fallback
+			try {
+				const url = `https://claude.ai/api/organizations/${orgId}/chat_conversations/${currentConversationId}?tree=true&rendering_mode=messages&render_all_tools=true`;
+				const res = await fetch(url, { credentials: 'include' });
+				if (res.ok) {
+					const json = await res.json();
+					handleConversationPayload({ orgId, conversationId: currentConversationId, data: json });
+				}
+			} catch {}
 		}
 	}
 
@@ -217,31 +354,63 @@
 	CC.bridge.on('cc:generation_start', handleGenerationStart);
 	CC.bridge.on('cc:conversation', handleConversationPayload);
 	CC.bridge.on('cc:message_limit', handleMessageLimit);
+	CC.bridge.on('cc:org_detected', (payload) => {
+		if (payload?.orgId) {
+			updateOrgIdIfNeeded(payload.orgId);
+			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+				chrome.storage.local.set({ claude_last_org_id: payload.orgId });
+			}
+		}
+	});
+
+	async function isExtensionEnabled() {
+		try {
+			if (typeof chrome !== 'undefined' && chrome.storage?.sync) {
+				const res = await new Promise((resolve) => {
+					chrome.storage.sync.get({ claudeCounterEnabled: true }, (items) => {
+						if (chrome.runtime?.lastError) resolve({ claudeCounterEnabled: true });
+						else resolve(items || { claudeCounterEnabled: true });
+					});
+				});
+				return res.claudeCounterEnabled !== false;
+			}
+		} catch {}
+		return true;
+	}
 
 	async function handleUrlChange() {
+		if (!(await isExtensionEnabled())) return;
+
 		currentConversationId = getConversationId();
 
+		// Attach immediately if elements already exist
+		ui.attachUsageLine();
+		ui.attachHeader();
+
 		// Attach usage line and header independently - they have different anchor elements
-		// and CHAT_MENU_TRIGGER doesn't exist on home/new pages
-		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+		// and the header anchor doesn't exist on home/new pages
+		waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
-		waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
+		waitForElement(CC.DOM.CHAT_HEADER_ANCHOR, 60000).then((el) => {
 			if (el) ui.attachHeader();
 		});
+
+		// Usage is org-level: restore/refresh on every page, including home/new
+		const orgId = await getOrgId();
+		updateOrgIdIfNeeded(orgId);
+		if (!usageState) {
+			const cached = await restoreCachedUsage();
+			if (cached) applyUsageUpdate(cached, 'cache');
+			else await refreshUsage();
+		}
 
 		if (!currentConversationId) {
 			ui.setConversationMetrics();
 			return;
 		}
 
-		// Best-effort orgId from cookie.
-		updateOrgIdIfNeeded(getOrgIdFromCookie());
-
 		await refreshConversation();
-
-		// Usage is org-level, not conversation-level. Only fetch on first load or if stale.
-		if (!usageState) await refreshUsage();
 	}
 
 	const unobserveUrl = observeUrlChanges(handleUrlChange);

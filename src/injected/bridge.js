@@ -3,6 +3,9 @@
 
 	const CC_MARKER = 'ClaudeCounter';
 
+	if (window.__ccBridgeInstalled) return;
+	window.__ccBridgeInstalled = true;
+
 	// Capture original fetch before anyone else can wrap it
 	const originalFetch = window.fetch;
 
@@ -26,9 +29,17 @@
 		const url = toAbsoluteUrl(args[0]);
 		const opts = args[1] || {};
 
+		const method = (opts.method || 'GET').toUpperCase();
+
 		// Detect generation start (completion requests)
-		if (url && opts.method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion'))) {
+		if (url && method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion') || url.includes('/sessions/'))) {
 			post('cc:generation_start', {});
+		}
+
+		// Detect and broadcast active orgId from any Claude API requests
+		const orgMatch = url && url.match(/^https:\/\/claude\.ai\/api\/organizations\/([^/]+)/);
+		if (orgMatch && orgMatch[1]) {
+			post('cc:org_detected', { orgId: orgMatch[1] });
 		}
 
 		const response = await originalFetch.apply(window, args);
@@ -38,8 +49,8 @@
 			handleEventStream(response);
 		}
 
-		// Catch conversation tree fetches
-		if (url && url.includes('/chat_conversations/') && url.includes('tree=')) {
+		// Catch conversation tree / messages fetches
+		if (url && url.includes('/chat_conversations/') && method === 'GET') {
 			const meta = getConversationMeta(url);
 			if (meta) {
 				handleConversationResponse(meta, response);
@@ -87,7 +98,9 @@
 		try {
 			const cloned = response.clone();
 			const data = await cloned.json();
-			post('cc:conversation', { orgId, conversationId, data });
+			if (data && (data.chat_messages || data.uuid || data.current_leaf_message_uuid)) {
+				post('cc:conversation', { orgId, conversationId, data });
+			}
 		} catch {
 			// ignore parse failures
 		}
@@ -181,4 +194,9 @@
 			postResponse(requestId, false, null, e?.message || String(e));
 		}
 	});
+
+	try {
+		document.documentElement.dataset.ccBridgeReady = 'true';
+	} catch {}
+	post('cc:bridge_ready', {});
 })();
