@@ -1,0 +1,332 @@
+{
+  "_meta": {
+    "title": "claude-counter: new claude.ai UI (Connect StreamTimeline) - protocol digest and test fixtures",
+    "created": "2026-10-12",
+    "corrected": "2026-10-14",
+    "version": 2,
+    "sources": [
+      "claude.ai.har - Chrome HAR, 2026-10-11 ~17:28Z, page load and one message, Free account",
+      "claude.ai2.har - Chrome HAR, 2026-10-11 18:32-18:50Z, StreamTimeline streams, same account",
+      "fixtures.txt - output of har_to_fixtures over the complete HARs (ids anonymised, gzip decoded)",
+      "claude-counter-findings-update-2026-10-13.md - confirmations and corrections (takes precedence over fixtures.json v1)"
+    ],
+    "provenance": "v2: the three limits frames below are byte-exact captures (hex copied from findings-update, taken from fixtures.txt). They were decoded again by an independent decoder on 2026-10-14: every Connect length adds up (5 + 119 = 124 bytes), doubles 0.76 and 0.25 and the epoch values recompute exactly. Field numbers and meanings are still inferred from values, there is no schema (API is v1alpha). Frames marked synthetic or reconstructed are NOT captures.",
+    "frame_hex_note": "limits frames: byte-exact. keepalive, end_cadence: structurally exact, built from the known bytes/JSON. text_delta_emoji: synthetic block id, real structure. Other frames are decoded form only.",
+    "privacy": "No e-mail, org/account/device ids. Conversation, session and block ids are aliased or synthetic. Cursors are epoch-ms values from the capture.",
+    "changes_vs_v1": [
+      "Event.11 is NOT a turn counter. It is a value bound to the conversation (A 1 then 2 when reopened, B 4 then 5, C 2 throughout). Meaning unknown.",
+      "Window order inside Limits is NOT stable (confirmed): 7d first in one real frame, 5h first in two. v1 hex was a reconstruction and is replaced by the real frames.",
+      "'Synthetic timestamp cursor' was wrong. The cursor on opening an idle conversation is the cursor of the snapshot event the server sends on open. The client then reopens streams with the cursor of the last event it received.",
+      "Answered open questions: gzip frames are conversation snapshots without limits; limits do not arrive when an idle conversation is opened; the event after limits is a snapshot (state back to 1).",
+      "Added: end-of-turn signal for the cache timer, tests for window expiry, persistence and the capture option (status planned)."
+    ]
+  },
+
+  "environment": {
+    "browser": "Chrome 154, Windows, Europe/Prague",
+    "extension": "claude-counter, hey-naf fork v2.0.2 (Manifest V3). Content scripts: src/injected/bridge.js (world MAIN, document_start) and src/content/{constants,bridge-client,tokens,ui,main}.js plus the vendored o200k_base tokenizer. Permission: storage only. Matches https://claude.ai/*.",
+    "account_A": "Works. Messages go via POST /api/organizations/<org>/chat_conversations/<id>/completion; the response is text/event-stream with an 'event: message_limit' event. Plan not recorded.",
+    "account_B": "Free plan (analytics_subscription_plan=claude_free, billing_type=none, rate_limit_tier=default_claude_ai, capabilities=[chat]). New unified chat/Cowork UI: page telemetry says sidebar='unified'; manual/auto approval selector; attach/dictate buttons below the input box; no voice mode. Bars stay at 0%. Reproduces in an incognito window and in a fresh Chrome profile with a fresh extension install, so the problem follows the account, not the browser state. Started about two weeks before 2026-10-11."
+  },
+
+  "extension_callsites_from_initiator_stacks": {
+    "caveat": "Line/column numbers come from the user's installed build and are approximate. In the repo (hey-naf 2.0.2) the fetch wrapper in src/injected/bridge.js starts at line 28.",
+    "src/injected/bridge.js": {
+      "window.fetch wrapper": "repo line 28. It is in the stack of every page fetch, including PerformAction and StreamTimeline, so the hook already sees these requests.",
+      "generation_start detection": "repo line 35: only /completion, /retry_completion and /sessions/ match. PerformAction does not match, so the cache timer is never marked pending on the new UI.",
+      "history.replaceState wrapper": "repo line 22"
+    },
+    "src/content/main.js": {
+      "tick": "repo line 460 (calls refreshUsage every second while no usage was ever applied: lastUsageSseMs and lastUsageUpdateMs start at 0)",
+      "refreshUsage": "repo line 260",
+      "refreshConversation": "repo line 309 (the only source of token count and cache timer)",
+      "handleUrlChange": "repo line 381"
+    },
+    "observation": "On account B, GET /usage was requested 4 times within ~3 s and always returned all-null. Explained by the tick() condition above (derived from the code, not yet reproduced in a browser)."
+  },
+
+  "endpoints_new_ui": {
+    "PerformAction": "POST /claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction. content-type application/proto; headers connect-protocol-version: 1, x-organization-uuid, anthropic-client-build/platform/sha. Binary protobuf body (~3 KB): session id (sess_...), conversation uuid, message uuid, user text, model name, list of enabled MCP tools, locale, timezone, mode 'auto', effort 'low'. Response: 200 with content-length 0. The reply arrives on StreamTimeline. This request is the start of a turn (use it for the generation_start signal).",
+    "StreamTimeline": "POST /claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/StreamTimeline. content-type application/connect+proto; connect-accept-encoding: gzip; response header connect-content-encoding: gzip. Long-lived server stream. Opened ~2.8 s after PerformAction in the capture, but the UI also opens it earlier (call stack shows preopenTimeline) when a chat is opened.",
+    "ReportViewing": "POST .../ConversationService/ReportViewing, application/proto, 76-byte body (two uuids), 2-byte response. Irrelevant for limits.",
+    "GET conversation JSON": "GET /api/organizations/<org>/chat_conversations/<id>?tree=true&rendering_mode=messages&render_all_tools=true returns the conversation (chat_messages[]) as JSON. Still works in the new UI. Token count and cache timer are computed only from it. UNKNOWN: whether the page itself re-fetches it after a turn in the new UI (probably not, state arrives via the stream).",
+    "GET organization": "GET /api/organizations/<org> returns plan flags (see environment.account_B).",
+    "GET usage": "GET /api/organizations/<org>/usage returns HTTP 200 with every value null (five_hour, seven_day, seven_day_oauth_apps, seven_day_opus, seven_day_sonnet, seven_day_cowork, extra_usage, spend ...) and limits: []. Useless for Free accounts."
+  },
+
+  "stream_timeline_request": {
+    "body": "One Connect frame: flags 00, 4-byte big-endian length, protobuf payload.",
+    "fields": {
+      "1": "string: conversation uuid (36 chars)",
+      "2": "optional { 1: resume cursor string '<epoch_ms>-<n>' }",
+      "3": "varint 1",
+      "4": "{ 6: 1 }",
+      "5": "string 'en-US'",
+      "6": "optional varint 1"
+    },
+    "observed_payload_lengths": {
+      "0x33 (51)": "no cursor, no field 6 (first open of a chat)",
+      "0x35 (53)": "no cursor, with field 6",
+      "0x48 (72)": "cursor and field 6 (reopen)"
+    },
+    "cursor_note": "On opening an idle conversation the server first sends one snapshot event (one gzip frame); the cursor of that event is what the client reuses. After that the client always reopens with the cursor of the LAST event it received (example: a stream ending at cursor 1791743967530-0 is followed by a request with cursor=1791743967530-0). The earlier v1 idea of a 'synthetic timestamp cursor' was wrong."
+  },
+
+  "connect_framing": {
+    "frame": "flags(1 byte) | length(4 bytes, big-endian) | payload",
+    "flags": {
+      "0x00": "plain protobuf message",
+      "0x01": "payload compressed with gzip (magic 1f 8b 08), per connect-content-encoding: gzip",
+      "0x02": "end of stream; payload is JSON: {\"metadata\":{...}} or {\"error\":{...},\"metadata\":{...}}"
+    },
+    "keepalive": "00 00 00 00 04 0a 02 32 00 (payload = event with an empty field 6). About one every 20 s (105 in the whole capture).",
+    "close_reasons": "Stream-Close-Reason 'cadence' (initial snapshot stream closes after ~5-7 s) and 'max_age' (live stream closes after ~600 s). The client then reopens with a cursor, so one reply can span several requests.",
+    "size_split": "All plain frames seen are below ~120 bytes; all gzip frames decompress to ~3-5 KB. The exact threshold is unknown.",
+    "chunking": "Frames are not aligned to network chunks. Parse from a byte buffer."
+  },
+
+  "event_schema_inferred": {
+    "caveat": "Field numbers are read from the tag bytes. Meanings are inferred from values (API is v1alpha, may change). Protobuf is a tag-length-value format: the tag carries the field number and the wire type.",
+    "frame_payload": "{ 1: Event }",
+    "Event": {
+      "10": "{ 1: cursor string '<epoch_ms>-<n>' }",
+      "11": "varint bound to the conversation, NOT a turn counter (A 1 then 2, B 4 then 5, C 2 throughout). Meaning unknown.",
+      "one_of": {
+        "1": "snapshot of conversation state (usually in a gzip frame) or 'block done' { 5: { 1: block id, 2: group id 'dgrp_...', 4: 1, 9: full text, 10: { 1: 2 }, 24: 1 } }",
+        "2": "text delta { 1: block id 'cblk_...', 2: text }",
+        "4": "LIMITS (see below)",
+        "14": "session status { 1: { 1: 'sess_...' }, 2: status varint (1 or 2 observed) }",
+        "6": "empty string = heartbeat (keepalive)"
+      }
+    },
+    "Snapshot (gzip frame, event field 1)": {
+      "structure": "Event.1 { 1: 1 (first snapshot only), 2: Item { 1: conversation uuid, 2: title (e.g. 'Greeting', missing at first), 3: state (2 while a turn runs, 1 idle; derived), 4: {1: epoch s, 2: nanos} created, 5: same, updated, 6: {2: model}, 7: uuid (last message/turn?), 8: Any 'type.googleapis.com/anthropic.bard.api.v1alpha.SandboxFileActivity', 10: {...} } }",
+      "note": "No limits data in any snapshot. Sub-messages that failed to parse stay as hex in the decoder output and were not searched."
+    },
+    "Limits (event field 4)": {
+      "1": "varint 1 (probably status 'within_limit')",
+      "5": "varint 0 (probably overageInUse=false)",
+      "6": "string 'overage_not_provisioned' (= overageDisabledReason)",
+      "9": "string 'five_hour' (= representativeClaim)",
+      "13": "REPEATED { 1: window key '5h' | '7d', 2: { 1: status varint, 2: { 1: resets_at epoch seconds (varint) }, 3: utilization (fixed64 little-endian double, fraction 0..1) } }. ORDER OF THE ENTRIES VARIES between frames: read as a map by key."
+    },
+    "mapping_to_old_sse": {
+      "message_limit.windows['5h'].utilization": "Limits.13['5h'].2.3",
+      "message_limit.windows['5h'].resets_at": "Limits.13['5h'].2.2.1",
+      "message_limit.representativeClaim": "Limits.9",
+      "message_limit.overageDisabledReason": "Limits.6",
+      "resolved.limit.percent": "NOT present in the new stream; compute round(utilization*100)"
+    },
+    "order_of_events_per_turn": "PerformAction request -> (snapshot state 2) -> text delta(s) -> block done -> limits (6-7 ms after block done, plain frame) -> snapshot (gzip, +4-5 ms, state back to 1) -> snapshot with title (e.g. +321 ms later in conversation A). Limits arrive once per assistant turn and NOT when an idle conversation is opened. The limits event is therefore the first plain signal that a turn has ended."
+  },
+
+  "frames": [
+    {
+      "id": "keepalive",
+      "kind": "keepalive",
+      "frame_hex": "00 00 00 00 04 0a 02 32 00",
+      "decoded": {"1": {"6": ""}}
+    },
+    {
+      "id": "text_delta_emoji",
+      "kind": "event",
+      "frame_hex": "00 00 00 00 3e 0a 3c 52 11 0a 0f 31 37 39 31 37 34 33 35 36 33 36 36 31 2d 30 58 01 12 25 0a 1d 63 62 6c 6b 5f 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 30 12 04 f0 9f 91 8b",
+      "decoded": {"1": {"10": {"1": "1791743563661-0"}, "11": 1, "2": {"1": "cblk_000000000000000000000000", "2": "👋"}}},
+      "note": "synthetic block id, real structure. Expected: ignored by the limits parser, no error."
+    },
+    {
+      "id": "block_done_text",
+      "kind": "event",
+      "frame_hex": null,
+      "decoded": {"1": {"10": {"1": "1791743563661-1"}, "11": 1, "1": {"5": {"1": "cblk_<id>", "2": "dgrp_<id>", "4": 1, "9": "Ahoj! 👋", "10": {"1": 2}, "24": 1}}}},
+      "note": "decoded only"
+    },
+    {
+      "id": "session_status",
+      "kind": "event",
+      "frame_hex": null,
+      "decoded": {"1": {"10": {"1": "1791744119988-0"}, "11": 2, "14": {"1": {"1": "sess_<id>"}, "2": 2}}},
+      "note": "decoded only"
+    },
+    {
+      "id": "limits_A_7d_first",
+      "kind": "limits",
+      "captured": true,
+      "source": "conversation A, 18:32Z, event.11 = 1, 7d FIRST",
+      "frame_hex": "00000000770a7552110a0f313739313734333536333636382d305801225e0801280032176f7665726167655f6e6f745f70726f766973696f6e65644a09666976655f686f75726a190a02376412130801120608f0b1bed60619000000000000d03f6a190a0235681213080112060898daafd6061952b81e85eb51e83f",
+      "decoded": {
+        "cursor": "1791743563668-0",
+        "representative_claim": "five_hour",
+        "overage_disabled_reason": "overage_not_provisioned",
+        "window_order": ["7d", "5h"],
+        "windows": {
+          "5h": {"status": 1, "resets_at": 1791749400, "resets_at_utc": "2026-10-11T20:10:00Z", "utilization": 0.76},
+          "7d": {"status": 1, "resets_at": 1791990000, "resets_at_utc": "2026-10-14T15:00:00Z", "utilization": 0.25}
+        }
+      }
+    },
+    {
+      "id": "limits_C_turn1_5h_first",
+      "kind": "limits",
+      "captured": true,
+      "source": "conversation C, turn 1, 18:39Z, event.11 = 2, 5h FIRST",
+      "frame_hex": "00000000770a7552110a0f313739313734333936373532352d305802225e0801280032176f7665726167655f6e6f745f70726f766973696f6e65644a09666976655f686f75726a190a0235681213080112060898daafd6061952b81e85eb51e83f6a190a02376412130801120608f0b1bed60619000000000000d03f",
+      "decoded": {
+        "cursor": "1791743967525-0",
+        "representative_claim": "five_hour",
+        "overage_disabled_reason": "overage_not_provisioned",
+        "window_order": ["5h", "7d"],
+        "windows": {
+          "5h": {"status": 1, "resets_at": 1791749400, "resets_at_utc": "2026-10-11T20:10:00Z", "utilization": 0.76},
+          "7d": {"status": 1, "resets_at": 1791990000, "resets_at_utc": "2026-10-14T15:00:00Z", "utilization": 0.25}
+        }
+      }
+    },
+    {
+      "id": "limits_C_turn2_5h_first",
+      "kind": "limits",
+      "captured": true,
+      "source": "conversation C, turn 2, 18:42Z, event.11 = 2, 5h FIRST",
+      "frame_hex": "00000000770a7552110a0f313739313734343132303630362d305802225e0801280032176f7665726167655f6e6f745f70726f766973696f6e65644a09666976655f686f75726a190a0235681213080112060898daafd6061952b81e85eb51e83f6a190a02376412130801120608f0b1bed60619000000000000d03f",
+      "decoded": {
+        "cursor": "1791744120606-0",
+        "representative_claim": "five_hour",
+        "overage_disabled_reason": "overage_not_provisioned",
+        "window_order": ["5h", "7d"],
+        "windows": {
+          "5h": {"status": 1, "resets_at": 1791749400, "resets_at_utc": "2026-10-11T20:10:00Z", "utilization": 0.76},
+          "7d": {"status": 1, "resets_at": 1791990000, "resets_at_utc": "2026-10-14T15:00:00Z", "utilization": 0.25}
+        }
+      },
+      "note": "identical window values in all three captured turns (small Haiku messages). Do not assume values change between turns."
+    },
+    {
+      "id": "end_cadence",
+      "kind": "end",
+      "frame_hex": "02 00 00 00 30 7b 22 6d 65 74 61 64 61 74 61 22 3a 7b 22 53 74 72 65 61 6d 2d 43 6c 6f 73 65 2d 52 65 61 73 6f 6e 22 3a 5b 22 63 61 64 65 6e 63 65 22 5d 7d 7d",
+      "decoded": {"metadata": {"Stream-Close-Reason": ["cadence"]}},
+      "note": "built from the JSON, structurally exact. 'max_age' has the same length (48-byte JSON)."
+    },
+    {
+      "id": "end_error_not_found",
+      "kind": "end",
+      "frame_hex": null,
+      "decoded": {
+        "error": {
+          "code": "not_found",
+          "message": "This conversation could not be found.",
+          "details": [
+            {"type": "anthropic.errors.v1alpha.NotFoundError", "value": "<base64 protobuf>", "debug": {"message": "This conversation could not be found."}},
+            {"type": "google.rpc.ErrorInfo", "value": "<base64 protobuf>", "debug": {"reason": "chat_conversation_not_found", "domain": "anthropic.com", "metadata": {"error_type": "not_found_error", "error_visibility": "user_facing", "is_retryable": "true"}}}
+          ]
+        },
+        "metadata": {"Request-Id": ["req_<id>"]}
+      },
+      "note": "Sent after two keepalive frames. Happens when the UI pre-opens the stream of a chat that does not exist yet. Seen 3 times, 30 s apart."
+    },
+    {
+      "id": "end_error_resource_exhausted",
+      "kind": "end",
+      "frame_hex": null,
+      "decoded": {
+        "error": {
+          "code": "resource_exhausted",
+          "message": "Too many recent attempts to open this session's event stream have timed out. Wait a few minutes before retrying.",
+          "details": [
+            {"type": "anthropic.errors.v1alpha.RateLimitError"},
+            {"type": "google.rpc.ErrorInfo", "debug": {"reason": "chat_conversation_creation_wait_exhausted", "domain": "anthropic.com", "metadata": {"error_type": "rate_limit_error", "error_visibility": "user_facing"}}}
+          ]
+        }
+      },
+      "note": "The page, not the extension, caused this by retrying; the extension must never open streams itself."
+    }
+  ],
+
+  "streams_observed_claude.ai2.har": {
+    "legend": "conv A = chat with 'Ahoj! 👋' (turn at ~18:32:43Z); B = an older chat opened by click; C = a new chat created ~18:39Z (turn 1 at 18:39:27Z, turn 2 'Jak se máš?' at ~18:42:00Z). 'gz' = contains gzip frames (conversation snapshots, no limits).",
+    "rows": [
+      {"n": 1, "t_utc": "18:32:38.9", "conv": "A", "cursor": null, "dur_s": 7.2, "bytes": 9328, "end": "cadence", "note": "snapshots (gz) + plain events (text delta, block done, limits 0.76/0.25, 7d first)"},
+      {"n": 2, "t_utc": "18:32:46.2", "conv": "A", "cursor": "1791743563989-0", "dur_s": 24.8, "bytes": 18, "end": "client abort", "note": "2 keepalives. Cursor is later than the limits event (...668): the events after it are snapshots (state back to 1; the next one carries the title 'Greeting')."},
+      {"n": 3, "t_utc": "18:33:05.8", "conv": "B", "cursor": null, "dur_s": 5.2, "bytes": 1851, "end": "cadence", "note": "idle chat: one snapshot (gz) and NO limits"},
+      {"n": 4, "t_utc": "18:33:11.0", "conv": "B", "cursor": "1791743585276-0", "dur_s": 8.3, "bytes": 9, "end": "client abort", "note": "1 keepalive; cursor is the cursor of the snapshot sent on open"},
+      {"n": 5, "t_utc": "18:33:20.2", "conv": "C", "cursor": null, "dur_s": 30.2, "bytes": 737, "end": "error not_found"},
+      {"n": 6, "t_utc": "18:33:50.6", "conv": "C", "cursor": null, "dur_s": 30.3, "bytes": 737, "end": "error not_found"},
+      {"n": 7, "t_utc": "18:34:21.3", "conv": "C", "cursor": null, "dur_s": 30.2, "bytes": 737, "end": "error not_found"},
+      {"n": 8, "t_utc": "18:34:52.2", "conv": "C", "cursor": null, "dur_s": 1.2, "bytes": 978, "end": "error resource_exhausted"},
+      {"n": 9, "t_utc": "18:39:26.7", "conv": "C", "cursor": null, "dur_s": 3.1, "bytes": 9303, "end": "cadence", "note": "chat now exists; turn 1 incl. limits event (5h first)"},
+      {"n": 10, "t_utc": "18:39:29.8", "conv": "C", "cursor": "1791743967530-0", "dur_s": 658.6, "bytes": 6265, "end": "max_age", "note": "live stream; turn 2 delivered here (session status, text deltas, block done, limits 0.76/0.25, 5h first)"},
+      {"n": 11, "t_utc": "18:41:13.8", "conv": "A", "cursor": null, "dur_s": 5.2, "bytes": 1613, "end": "cadence", "note": "idle chat reopened: one snapshot, no limits"},
+      {"n": 12, "t_utc": "18:41:19.05", "conv": "B", "cursor": null, "dur_s": 5.2, "bytes": 1852, "end": "cadence", "note": "idle chat reopened: one snapshot, no limits"},
+      {"n": 13, "t_utc": "18:41:19.07", "conv": "A", "cursor": "1791744073320-0", "dur_s": 8.3, "bytes": 9, "end": "client abort"},
+      {"n": 14, "t_utc": "18:41:24.3", "conv": "B", "cursor": "1791744078530-0", "dur_s": 1.1, "bytes": 9, "end": "client abort"},
+      {"n": 15, "t_utc": "18:50:28.5", "conv": "C", "cursor": "1791744120610-0", "dur_s": 600.9, "bytes": 332, "end": "max_age", "note": "31 keepalives + end frame"}
+    ]
+  },
+
+  "old_path_sample_account_A": {
+    "transport": "POST .../chat_conversations/<id>/completion, text/event-stream",
+    "sse_text": "event: message_limit\ndata: <json below>\n\n",
+    "data_json": {
+      "type": "message_limit",
+      "message_limit": {
+        "type": "within_limit",
+        "resetsAt": null,
+        "remaining": null,
+        "perModelLimit": null,
+        "representativeClaim": "five_hour",
+        "overageDisabledReason": "overage_not_provisioned",
+        "overageInUse": false,
+        "windows": {
+          "5h": {"status": "within_limit", "resets_at": 1791750000, "utilization": 0.2},
+          "7d": {"status": "within_limit", "resets_at": 1792116000, "utilization": 0.12}
+        },
+        "resolved": {
+          "status": "ok",
+          "limit": {"kind": "session", "group": "session", "percent": 20, "severity": "normal", "resets_at": "2026-10-11T20:20:00+00:00", "scope": null, "is_active": true},
+          "spend": null,
+          "disabled_reason": "overage_not_provisioned",
+          "notice": null
+        }
+      }
+    },
+    "expected_for_ui": {"5h": 0.2, "7d": 0.12}
+  },
+
+  "test_cases": [
+    {"id": "T01", "title": "limits frame", "input": "frames[id=limits_C_turn1_5h_first].frame_hex", "expect": "5h {utilization 0.76, resets_at 1791749400}, 7d {utilization 0.25, resets_at 1791990000}, claim five_hour, overage reason overage_not_provisioned"},
+    {"id": "T02", "title": "window order independence", "input": "frames limits_A_7d_first (7d first) and limits_C_turn1_5h_first (5h first), both captured", "expect": "identical windows in both results"},
+    {"id": "T03", "title": "keepalive", "input": "frames[id=keepalive]", "expect": "no output, no error"},
+    {"id": "T04", "title": "non-limit events", "input": "text delta, block done, session status frames", "expect": "ignored, no error, no UI change. Note: only text_delta_emoji has hex; the other two are rebuilt from the decoded form."},
+    {"id": "T05", "title": "end frames", "input": "end_cadence, end_error_not_found, end_error_resource_exhausted (JSON payloads built from decoded form)", "expect": "stream ends cleanly, no throw, no limits emitted"},
+    {"id": "T06", "title": "chunking", "input": "concatenate keepalive + text delta + limits + end_cadence; feed split at every byte offset and as 1-byte chunks", "expect": "same single limits result every time"},
+    {"id": "T07", "title": "gzip frame (optional)", "input": "wrap the limits payload as a flag-01 gzip frame; also a corrupted gzip frame", "expect": "same limits result; corrupted frame ignored without exception. Plain skipping of gzip frames is acceptable for the first version."},
+    {"id": "T08", "title": "old SSE path regression", "input": "old_path_sample_account_A", "expect": "5h 0.2 / 7d 0.12 exactly as before the patch; Connect handler is not invoked for /completion and the SSE handler is not invoked for StreamTimeline"},
+    {"id": "T09", "title": "no data", "input": "no limits event ever received and nothing persisted", "expect": "UI shows an explicit 'no data' state instead of 0% (UI commit)"},
+    {"id": "T10", "title": "repeated limits events", "input": "same limits event delivered after every turn, across several streams", "expect": "idempotent; the last value wins; events without windows are ignored. Values may be identical between turns."},
+    {"id": "T11", "title": "page not disturbed", "input": "intercept StreamTimeline with clone()", "expect": "the page's reader gets identical bytes; no locked or consumed body; abort/cancel is not an unhandled rejection"},
+    {"id": "T12", "title": "URL scoping", "input": "any other fetch (usage, conversation JSON, event_logging, rum, ReportViewing)", "expect": "untouched. PerformAction only emits the generation_start signal, nothing else."},
+    {"id": "T13", "status": "planned", "title": "generation start on PerformAction", "input": "POST .../ConversationService/PerformAction", "expect": "cc:generation_start is emitted once; the request itself is passed through unchanged"},
+    {"id": "T14", "status": "planned", "title": "turn end triggers conversation refresh", "input": "limits event after a PerformAction", "expect": "a turn-end signal is emitted so the content script re-reads the conversation JSON (token count and cache timer). Works with identical limits values."},
+    {"id": "T15", "status": "planned", "title": "expired window", "input": "stored usage whose resets_at is in the past for 5h but in the future for 7d", "expect": "5h shows 0% without a stale 'resets in 0s'; 7d keeps its value (windows are judged independently)"},
+    {"id": "T16", "status": "planned", "title": "persisted value after reload", "input": "usage stored after a turn, then page load without any new message", "expect": "stored values are shown (expired windows as 0%), not 'no data' and not a bare 0%"},
+    {"id": "T17", "status": "planned", "title": "usage polling", "input": "page with no usage data ever, 10 minutes of ticks", "expect": "no more than one GET /usage per hour (plus rollover refreshes), not one per second"},
+    {"id": "T18", "status": "planned", "title": "capture option", "input": "capture off (default) and on", "expect": "off: nothing recorded; on: frames recorded in memory and exportable; redacted export contains no conversation text or ids"}
+  ],
+
+  "open_questions": {
+    "answered": [
+      "gzip frames are conversation snapshots (~3-5 KB), no limits in them (fixtures.txt over the full HARs).",
+      "Opening an idle conversation delivers one snapshot and NO limits; limits arrive only live after a turn.",
+      "The event after limits is a snapshot (+4-5 ms, state back to 1), a later one carries the title.",
+      "Event.11 is not a turn counter."
+    ],
+    "still_open": [
+      "Do the 0.76 / 0.25 values match Settings -> Usage in claude.ai? (not verified)",
+      "Do the values change after heavier use? (three small turns gave bit-identical values)",
+      "What are Limits field 1 / field 5 and Event field 11 exactly?",
+      "Do the token counter and cache timer work on account B? Cache timer: not without a change, see endpoints_new_ui. Whether the conversation JSON already contains the new assistant message right after limits: unknown, needs a browser test.",
+      "Which request does Settings -> Usage use on a Free account? Not captured. If it is a plain API call, bars could be filled on page open without a message.",
+      "Will account A be moved to the new UI too? Then the old path will eventually stop working."
+    ]
+  }
+}
