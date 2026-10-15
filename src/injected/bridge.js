@@ -7,6 +7,9 @@
 	// long-lived Connect stream (StreamTimeline). The PerformAction RPC is NOT a turn start: the
 	// page also calls it when a chat is opened and while typing, so it is deliberately ignored.
 	const RPC_STREAM_TIMELINE = 'ConversationService/StreamTimeline';
+	const RPC_PATH = '/claudeai-rpc/';
+	const CAPTURE_HOST = /^https:\/\/([\w-]+\.)?claude\.ai\//;
+	const MAX_CAPTURE_BODY_BYTES = 512 * 1024;
 	const MAX_CONNECT_FRAME_BYTES = 4 * 1024 * 1024;
 	const MAX_GUNZIP_BYTES = 4 * 1024 * 1024;
 
@@ -38,6 +41,9 @@
 
 		const method = (opts.method || 'GET').toUpperCase();
 
+		// Optional traffic recording, switched on in the extension settings (see capture-client.js).
+		const capId = captureActive() ? captureBegin(args, url, method) : 0;
+
 		// Detect generation start (completion requests)
 		if (url && method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion') || url.includes('/sessions/'))) {
 			post('cc:generation_start', {});
@@ -50,6 +56,8 @@
 		}
 
 		const response = await originalFetch.apply(window, args);
+
+		if (capId) captureResponse(capId, url, response);
 
 		const contentType = response.headers.get('content-type') || '';
 		if (contentType.includes('event-stream')) {
@@ -430,6 +438,149 @@
 		} catch {
 			// Aborted or failed streams are normal (the page reopens them); never break claude.ai.
 		}
+	}
+
+	// ---- optional traffic recording ----
+	// Everything below only runs while the setting is on. It reads clones of requests and responses
+	// and never changes what the page sends or receives.
+
+	let captureSeq = 0;
+
+	function captureActive() {
+		try {
+			return document.documentElement.dataset.ccCapture === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function captureEmit(record) {
+		try {
+			post('cc:capture_record', { t: Date.now(), ...record });
+		} catch {
+			// ignore
+		}
+	}
+
+	function toBase64(bytes) {
+		let bin = '';
+		for (let i = 0; i < bytes.length; i += 0x8000) {
+			bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+		}
+		return btoa(bin);
+	}
+
+	function bodyFields(bytes) {
+		if (!bytes) return {};
+		if (bytes.length > MAX_CAPTURE_BODY_BYTES) return { size: bytes.length, truncated: true };
+		return { size: bytes.length, b64: toBase64(bytes) };
+	}
+
+	function captureUrl(url, isRpc) {
+		try {
+			const u = new URL(url);
+			if (isRpc) return u.pathname;
+			// REST calls: path and the names of the query parameters, not their values.
+			const keys = Array.from(new Set(Array.from(u.searchParams.keys())));
+			return keys.length ? `${u.pathname}?${keys.join('&')}` : u.pathname;
+		} catch {
+			return '';
+		}
+	}
+
+	function requestHeader(args, name) {
+		try {
+			const init = args[1] || {};
+			const headers = init.headers || (typeof Request !== 'undefined' && args[0] instanceof Request ? args[0].headers : null);
+			if (!headers) return undefined;
+			if (typeof headers.get === 'function') return headers.get(name) || undefined;
+			if (Array.isArray(headers)) {
+				const hit = headers.find((h) => String(h[0]).toLowerCase() === name);
+				return hit ? hit[1] : undefined;
+			}
+			for (const key of Object.keys(headers)) {
+				if (key.toLowerCase() === name) return headers[key];
+			}
+		} catch {
+			// ignore
+		}
+		return undefined;
+	}
+
+	async function requestBodyBytes(args) {
+		const init = args[1] || {};
+		const body = init.body;
+		if (body == null && typeof Request !== 'undefined' && args[0] instanceof Request) {
+			return new Uint8Array(await args[0].clone().arrayBuffer());
+		}
+		if (typeof body === 'string') return new TextEncoder().encode(body);
+		if (body instanceof ArrayBuffer) return new Uint8Array(body.slice(0));
+		if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
+		if (typeof Blob !== 'undefined' && body instanceof Blob) return new Uint8Array(await body.arrayBuffer());
+		return null;
+	}
+
+	function captureBegin(args, url, method) {
+		try {
+			if (!url || !CAPTURE_HOST.test(url)) return 0;
+			const isRpc = url.includes(RPC_PATH);
+			const isApi = url.includes('/api/');
+			if (!isRpc && !isApi) return 0;
+
+			const id = ++captureSeq;
+			const base = { kind: 'req', id, method, url: captureUrl(url, isRpc), ct: requestHeader(args, 'content-type') };
+			if (!isRpc) {
+				captureEmit(base);
+				return id;
+			}
+			// The body has to be read from a copy taken before the page's own fetch uses it.
+			requestBodyBytes(args)
+				.then((bytes) => captureEmit({ ...base, ...bodyFields(bytes) }))
+				.catch(() => captureEmit(base));
+			return id;
+		} catch {
+			return 0;
+		}
+	}
+
+	function captureResponse(id, url, response) {
+		try {
+			const isRpc = url.includes(RPC_PATH);
+			const ct = response.headers.get('content-type') || '';
+			captureEmit({ kind: 'res', id, status: response.status, ct });
+			if (!isRpc) return;
+
+			if (url.includes(RPC_STREAM_TIMELINE) || ct.includes('connect+')) {
+				captureStream(id, response);
+			} else {
+				response
+					.clone()
+					.arrayBuffer()
+					.then((buf) => captureEmit({ kind: 'body', id, status: response.status, ct, ...bodyFields(new Uint8Array(buf)) }))
+					.catch(() => {});
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	async function captureStream(id, response) {
+		let reason = 'done';
+		try {
+			const reader = response.clone().body?.getReader?.();
+			if (!reader) return;
+			const parser = createConnectParser((flags, payload) => {
+				captureEmit({ kind: 'frame', id, flags, ...bodyFields(payload) });
+			});
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				parser.push(value);
+			}
+		} catch {
+			reason = 'error';
+		}
+		captureEmit({ kind: 'stream_end', id, reason });
 	}
 
 	window.addEventListener('message', async (event) => {

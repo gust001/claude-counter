@@ -29,7 +29,20 @@
       "128": "icons/icon128.png"
     }
   },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
   "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": [
+        "src/content/capture-redact.js",
+        "src/content/capture-store.js",
+        "src/content/capture-client.js"
+      ],
+      "run_at": "document_start"
+    },
     {
       "matches": ["https://claude.ai/*"],
       "js": ["src/injected/bridge.js"],

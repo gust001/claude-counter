@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Claude Counter settings</title>
+	<style>
+		:root { color-scheme: light dark; --bd: #8884; --muted: #888; }
+		body { font: 14px/1.5 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+		h1 { font-size: 1.4rem; }
+		h2 { font-size: 1.1rem; margin-top: 2rem; }
+		label { display: block; margin: .5rem 0; }
+		.hint { color: var(--muted); font-size: 13px; margin: .25rem 0 .75rem 1.6rem; }
+		table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+		th, td { border-bottom: 1px solid var(--bd); padding: .35rem .5rem; text-align: left; font-size: 13px; }
+		td.num, th.num { text-align: right; }
+		button { font: inherit; padding: .35rem .8rem; margin-right: .4rem; cursor: pointer; }
+		.status { margin: .75rem 0; padding: .5rem .75rem; border: 1px solid var(--bd); border-radius: 6px; }
+		.on { border-color: #c60; }
+		.empty { color: var(--muted); }
+	</style>
+</head>
+<body>
+	<h1>Claude Counter</h1>
+
+	<h2>Traffic recording (for analysis)</h2>
+	<p>
+		Records what claude.ai and its server exchange (requests, response streams, usage limits) so the new
+		interface can be analysed. It is off by default and the recording stays in this browser until you
+		download it. Changes apply to open claude.ai tabs immediately; a recording starts when the
+		setting is switched on.
+	</p>
+
+	<label><input type="checkbox" id="enabled" /> Record claude.ai traffic</label>
+	<label><input type="checkbox" id="redact" /> Mask message text and binary values (recommended)</label>
+	<div class="hint">
+		Masking replaces text with the letter x (same length) and keeps numbers, ids and the structure of the
+		messages. It is a best-effort heuristic, so look at the file before you share it.
+		With masking switched off the recording contains your messages and the replies.
+	</div>
+
+	<div id="status" class="status"></div>
+
+	<div>
+		<button id="downloadAll">Download all recordings</button>
+		<button id="refresh">Refresh</button>
+		<button id="clear">Delete all recordings</button>
+	</div>
+
+	<table id="sessions">
+		<thead>
+			<tr><th>Started</th><th>Page</th><th class="num">Records</th><th class="num">Size</th><th>Masked</th><th></th></tr>
+		</thead>
+		<tbody></tbody>
+	</table>
+	<p class="hint" style="margin-left:0">
+		Limits: about 2.5 MB and 2000 records per page load, the newest 3 page loads are kept.
+	</p>
+
+	<script src="../src/content/capture-store.js"></script>
+	<script src="options.js"></script>
+</body>
+</html>

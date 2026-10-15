@@ -31,13 +31,19 @@ function createBridgeEnv({ originalFetch, location } = {}) {
 		dispatchEvent() {}
 	};
 	const history = { pushState() {}, replaceState() {} };
-	const document = { documentElement: { dataset: {} } };
+	const documentElement = { dataset: {} };
+	const document = { documentElement };
 
 	new Function('window', 'history', 'document', 'location', source)(window, history, document, window.location);
 
 	return {
 		window,
 		messages,
+		documentElement,
+		/** The extension's capture client sets this flag; the bridge reads it on every request. */
+		setCapture(on) {
+			documentElement.dataset.ccCapture = on ? '1' : '0';
+		},
 		events(type) {
 			return messages.filter((m) => m && m.cc === 'ClaudeCounter' && m.type === type).map((m) => m.payload);
 		},
