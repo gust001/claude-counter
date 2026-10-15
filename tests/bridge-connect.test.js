@@ -260,7 +260,7 @@ test('T12 other requests are untouched and emit nothing new', async () => {
 	}
 });
 
-test('T13 PerformAction starts a turn once and is passed through unchanged', async () => {
+test('T13 PerformAction is passed through unchanged and is not treated as a turn start', async () => {
 	let original;
 	const env = createBridgeEnv({
 		originalFetch: async () => {
@@ -271,16 +271,11 @@ test('T13 PerformAction starts a turn once and is passed through unchanged', asy
 	const returned = await env.fetch(PERFORM_URL, { method: 'POST', body: new Uint8Array([1, 2, 3]) });
 	await settle(10);
 	assert.equal(returned, original);
-	assert.equal(env.events('cc:generation_start').length, 1);
+	assert.equal(env.events('cc:generation_start').length, 0, 'the page calls PerformAction when a chat is opened or while typing');
 	assert.equal(env.events('cc:message_limit').length, 0);
 });
 
-test('T13b requests given as a Request object or a relative URL are recognised too', async () => {
-	const env = createBridgeEnv({ originalFetch: async () => new Response(null, { status: 200 }) });
-	await env.fetch(new Request(PERFORM_URL, { method: 'POST', body: 'x' }));
-	await env.fetch('/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction', { method: 'POST' });
-	assert.equal(env.events('cc:generation_start').length, 2);
-
+test('T13b StreamTimeline requests given as a Request object are recognised too', async () => {
 	const response = streamResponse([frame('limits_5h_first')]);
 	const env2 = createBridgeEnv({ originalFetch: async () => response });
 	const returned = await env2.fetch(new Request(STREAM_URL, { method: 'POST', body: 'x' }));

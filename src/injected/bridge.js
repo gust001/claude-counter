@@ -3,9 +3,9 @@
 
 	const CC_MARKER = 'ClaudeCounter';
 
-	// New unified claude.ai interface: messages are sent with a Connect RPC (PerformAction) and the
-	// reply, including the usage limits, arrives on a long-lived Connect stream (StreamTimeline).
-	const RPC_PERFORM_ACTION = 'ConversationService/PerformAction';
+	// New unified claude.ai interface: the reply, including the usage limits, arrives on a
+	// long-lived Connect stream (StreamTimeline). The PerformAction RPC is NOT a turn start: the
+	// page also calls it when a chat is opened and while typing, so it is deliberately ignored.
 	const RPC_STREAM_TIMELINE = 'ConversationService/StreamTimeline';
 	const MAX_CONNECT_FRAME_BYTES = 4 * 1024 * 1024;
 	const MAX_GUNZIP_BYTES = 4 * 1024 * 1024;
@@ -40,11 +40,6 @@
 
 		// Detect generation start (completion requests)
 		if (url && method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion') || url.includes('/sessions/'))) {
-			post('cc:generation_start', {});
-		}
-
-		// New interface: PerformAction starts a turn (its reply arrives on StreamTimeline).
-		if (url && url.includes(RPC_PERFORM_ACTION)) {
 			post('cc:generation_start', {});
 		}
 
