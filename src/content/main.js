@@ -180,12 +180,19 @@
 	let currentConversationId = null;
 	let currentOrgId = null;
 
-	let usageState = null; // last snapshot
-	let usageResetMs = { five_hour: null, seven_day: null }; // cached parsed timestamps
-	let lastUsageSseMs = 0;
+	// Usage state: one entry per window. A window is either live ({ utilization, resets_at, ... }),
+	// expired ({ expired: true }: its reset time has passed, nothing was used since) or null (never seen).
+	let usageState = null;
+	// When /usage may be asked next. A failed request (error, timeout) is retried after a minute. An
+	// answer that is valid but reports no windows (free plan) is a real answer and is not repeated
+	// for an hour; the limits arrive with the replies anyway. Without this the free plan was asked
+	// again every second.
+	let nextUsageAttemptMs = Date.now() + 60 * 60 * 1000;
 	let usageFetchInFlight = false;
-	let lastUsageUpdateMs = 0;
-	const rolloverHandledForResetMs = { five_hour: null, seven_day: null };
+	let restoreAttemptedForOrg = null;
+	const USAGE_WINDOW_KEYS = ['five_hour', 'seven_day'];
+	const USAGE_POLL_MS = 60 * 60 * 1000;
+	const USAGE_RETRY_MS = 60 * 1000;
 
 	const ui = new CC.ui.CounterUI({
 		onUsageRefresh: async () => {
@@ -197,17 +204,40 @@
 	// Bridge must be ready before we can make requests
 	const bridgeReady = CC.injectBridgeOnce();
 
+	function windowResetMs(w) {
+		if (!w || w.expired || !w.resets_at) return null;
+		const ms = Date.parse(w.resets_at);
+		return Number.isFinite(ms) ? ms : null;
+	}
+
+	/** Turns windows whose reset time has passed into { expired: true }. Returns true if anything changed. */
+	function expireWindows(now) {
+		if (!usageState) return false;
+		let changed = false;
+		for (const key of USAGE_WINDOW_KEYS) {
+			const resetMs = windowResetMs(usageState[key]);
+			if (resetMs !== null && now >= resetMs) {
+				usageState[key] = { expired: true };
+				changed = true;
+			}
+		}
+		return changed;
+	}
+
 	function applyUsageUpdate(normalized, source) {
 		if (!normalized) return;
 		const now = Date.now();
-		usageState = normalized;
-		persistUsage(normalized, currentOrgId || getOrgIdFromCookie());
-		lastUsageUpdateMs = now;
-		if (source === 'sse') lastUsageSseMs = now;
-		// Cache parsed timestamps to avoid Date.parse() every tick
-		usageResetMs.five_hour = normalized.five_hour?.resets_at ? Date.parse(normalized.five_hour.resets_at) : null;
-		usageResetMs.seven_day = normalized.seven_day?.resets_at ? Date.parse(normalized.seven_day.resets_at) : null;
-		ui.setUsage(normalized);
+		const previous = usageState || { five_hour: null, seven_day: null };
+		// A window missing from an update keeps what we know: the free plan's /usage reports nothing
+		// even while a window is live, and a limits event may carry only one window.
+		usageState = {
+			five_hour: normalized.five_hour || previous.five_hour,
+			seven_day: normalized.seven_day || previous.seven_day
+		};
+		expireWindows(now);
+		if (source !== 'cache') nextUsageAttemptMs = now + USAGE_POLL_MS;
+		if (source !== 'cache') persistUsage();
+		ui.setUsage(usageState);
 	}
 
 	function updateOrgIdIfNeeded(newOrgId) {
@@ -216,48 +246,50 @@
 		}
 	}
 
-	// Persist last usage snapshot so bars survive reloads (the /usage endpoint
-	// returns null windows on free plan until the next message streams message_limit).
-	function persistUsage(normalized, orgId) {
+	// Persist the last usage snapshot so the bars survive reloads (the /usage endpoint returns
+	// nothing on the free plan until the next reply brings the limits).
+	async function persistUsage() {
 		try {
-			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-				chrome.storage.local.set({ claude_usage_state: { orgId, usage: normalized } });
-			}
+			if (typeof chrome === 'undefined' || !chrome.storage?.local || !usageState) return;
+			const orgId = await getOrgId();
+			if (!orgId) return;
+			chrome.storage.local.set({ claude_usage_state: { orgId, usage: usageState } });
 		} catch {
 			// ignore
 		}
 	}
 
-	function restoreCachedUsage() {
+	function readStoredUsage() {
 		return new Promise((resolve) => {
 			try {
-				if (typeof chrome === 'undefined' || !chrome.storage?.local) return resolve();
-				chrome.storage.local.get(['claude_usage_state'], (result) => {
-					const entry = result?.claude_usage_state;
-					const cached = entry?.usage;
-					if (cached && entry.orgId === getOrgIdFromCookie() && (cached.five_hour || cached.seven_day)) {
-						resolve(cached);
-					} else {
-						resolve();
-					}
-				});
+				if (typeof chrome === 'undefined' || !chrome.storage?.local) return resolve(null);
+				chrome.storage.local.get(['claude_usage_state'], (result) => resolve(result?.claude_usage_state || null));
 			} catch {
-				resolve();
+				resolve(null);
 			}
 		});
 	}
 
-	function clearPersistedUsage() {
-		try {
-			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-				chrome.storage.local.remove('claude_usage_state');
-			}
-		} catch {
-			// ignore
-		}
+	// The saved snapshot belongs to one organisation. The organisation is resolved the same way as for
+	// every request (not from the cookie alone: it may be unreadable), and the attempt is repeated when
+	// the page reveals the organisation later.
+	async function restoreUsageIfNeeded() {
+		if (usageState) return true;
+		const orgId = await getOrgId();
+		if (!orgId || restoreAttemptedForOrg === orgId) return false;
+		restoreAttemptedForOrg = orgId;
+
+		const entry = await readStoredUsage();
+		const cached = entry?.usage;
+		if (!cached || entry.orgId !== orgId || !(cached.five_hour || cached.seven_day)) return false;
+		if (usageState) return true; // a limits event arrived while we were reading
+		applyUsageUpdate({ five_hour: cached.five_hour || null, seven_day: cached.seven_day || null }, 'cache');
+		return true;
 	}
 
 	async function refreshUsage() {
+		// Assume failure until a valid answer arrives.
+		nextUsageAttemptMs = Date.now() + USAGE_RETRY_MS;
 		await bridgeReady;
 		const orgId = await getOrgId();
 		if (!orgId) return;
@@ -282,27 +314,12 @@
 			usageFetchInFlight = false;
 		}
 
-		if (!raw) return;
+		if (!raw || typeof raw !== 'object') return;
+		nextUsageAttemptMs = Date.now() + USAGE_POLL_MS;
 
+		// Endpoint reachable but reports no windows (free plan): keep what we know, never wipe the saved snapshot.
 		const parsed = parseUsageFromUsageEndpoint(raw);
-
-		// Endpoint reachable but reports no windows. Only clear when nothing is
-		// live (free plan returns nulls even mid-window while SSE data is fresh).
-		if (raw && typeof raw === 'object' && !parsed) {
-			const nowMs = Date.now();
-			const hasLiveWindow =
-				(usageResetMs.five_hour && nowMs < usageResetMs.five_hour) ||
-				(usageResetMs.seven_day && nowMs < usageResetMs.seven_day);
-			if (!hasLiveWindow) {
-				usageState = null;
-				usageResetMs.five_hour = null;
-				usageResetMs.seven_day = null;
-				clearPersistedUsage();
-				ui.setUsage({});
-			}
-			return;
-		}
-
+		if (!parsed) return;
 		applyUsageUpdate(parsed, 'usage');
 	}
 
@@ -337,13 +354,37 @@
 		ui.setPendingCache(true);
 	}
 
-	async function handleConversationPayload({ orgId, conversationId, data }) {
+	// Per conversation: how many messages the last read contained, and a provisional end of the cache
+	// window set when a reply finished (until the conversation read confirms it).
+	const trunkCountByConversation = new Map();
+	let provisionalCache = null; // { conversationId, until }
+	let metricsSeq = 0;
+
+	let metricsDone = Promise.resolve();
+
+	function handleConversationPayload(payload) {
+		const run = processConversationPayload(payload || {});
+		metricsDone = run.catch(() => {});
+		return run;
+	}
+
+	async function processConversationPayload({ orgId, conversationId, data }) {
 		if (!conversationId || conversationId !== currentConversationId) return;
 		updateOrgIdIfNeeded(orgId);
 		if (!data) return;
 
+		const seq = ++metricsSeq;
 		const metrics = await CC.tokens.computeConversationMetrics(data);
-		ui.setConversationMetrics({ totalTokens: metrics.totalTokens, cachedUntil: metrics.cachedUntil });
+		// A newer read finished (or the user moved to another chat) while this one was being counted.
+		if (seq !== metricsSeq || conversationId !== currentConversationId) return;
+
+		trunkCountByConversation.set(conversationId, metrics.trunkMessageCount);
+
+		let cachedUntil = metrics.cachedUntil;
+		if (provisionalCache && provisionalCache.conversationId === conversationId && provisionalCache.until > Date.now()) {
+			cachedUntil = Math.max(cachedUntil || 0, provisionalCache.until);
+		}
+		ui.setConversationMetrics({ totalTokens: metrics.totalTokens, cachedUntil });
 	}
 
 	function handleMessageLimit(messageLimit) {
@@ -351,15 +392,42 @@
 		applyUsageUpdate(parsed, 'sse');
 	}
 
+	function sleep(ms) {
+		return new Promise((resolve) => setTimeout(resolve, ms));
+	}
+
+	// New interface: the page does not fetch the conversation JSON when a reply is done, so the
+	// bridge announces the end of a reply (cc:turn_end) and the conversation is read again here.
+	// The server may need a moment to store the new messages, hence the retries.
+	async function refreshAfterTurn(conversationId, knownCount) {
+		for (const delayMs of [1200, 5000, 12000]) {
+			await sleep(delayMs);
+			if (currentConversationId !== conversationId) return;
+			await refreshConversation();
+			await metricsDone;
+			if ((trunkCountByConversation.get(conversationId) ?? -1) > knownCount) return;
+		}
+	}
+
+	function handleTurnEnd() {
+		if (!currentConversationId) return;
+		const conversationId = currentConversationId;
+		provisionalCache = { conversationId, until: Date.now() + CC.CONST.CACHE_WINDOW_MS };
+		refreshAfterTurn(conversationId, trunkCountByConversation.get(conversationId) ?? -1).catch(() => {});
+	}
+
 	CC.bridge.on('cc:generation_start', handleGenerationStart);
 	CC.bridge.on('cc:conversation', handleConversationPayload);
 	CC.bridge.on('cc:message_limit', handleMessageLimit);
+	CC.bridge.on('cc:turn_end', handleTurnEnd);
 	CC.bridge.on('cc:org_detected', (payload) => {
 		if (payload?.orgId) {
 			updateOrgIdIfNeeded(payload.orgId);
 			if (typeof chrome !== 'undefined' && chrome.storage?.local) {
 				chrome.storage.local.set({ claude_last_org_id: payload.orgId });
 			}
+			// The saved usage could not be matched earlier if the organisation was still unknown.
+			if (!usageState) restoreUsageIfNeeded().catch(() => {});
 		}
 	});
 
@@ -400,9 +468,8 @@
 		const orgId = await getOrgId();
 		updateOrgIdIfNeeded(orgId);
 		if (!usageState) {
-			const cached = await restoreCachedUsage();
-			if (cached) applyUsageUpdate(cached, 'cache');
-			else await refreshUsage();
+			const restored = await restoreUsageIfNeeded();
+			if (!restored) await refreshUsage();
 		}
 
 		if (!currentConversationId) {
@@ -460,23 +527,17 @@
 	function tick() {
 		ui.tick();
 
-		// Refresh usage when a window ends (5h / 7d). SSE won't fire at rollover unless a message is sent.
 		const now = Date.now();
 
-		if (usageResetMs.five_hour && now >= usageResetMs.five_hour && rolloverHandledForResetMs.five_hour !== usageResetMs.five_hour) {
-			rolloverHandledForResetMs.five_hour = usageResetMs.five_hour;
-			refreshUsage();
-		}
-		if (usageResetMs.seven_day && now >= usageResetMs.seven_day && rolloverHandledForResetMs.seven_day !== usageResetMs.seven_day) {
-			rolloverHandledForResetMs.seven_day = usageResetMs.seven_day;
-			refreshUsage();
+		// A window whose reset time has passed shows 0% (nothing was used since); ask once for fresh data.
+		if (expireWindows(now)) {
+			persistUsage();
+			ui.setUsage(usageState);
+			if (!document.hidden) refreshUsage();
 		}
 
-		// Optional hourly safety refresh.
-		const ONE_HOUR_MS = 60 * 60 * 1000;
-		const sseAge = now - lastUsageSseMs;
-		const anyAge = now - lastUsageUpdateMs;
-		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS) {
+		// Safety refresh: hourly after a valid answer or fresh limits, every minute after a failure.
+		if (!document.hidden && now >= nextUsageAttemptMs) {
 			refreshUsage();
 		}
 	}

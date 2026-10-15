@@ -611,6 +611,7 @@
 					method: 'GET',
 					credentials: 'include'
 				});
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const json = await res.json();
 				postResponse(requestId, true, json, null);
 				return;
