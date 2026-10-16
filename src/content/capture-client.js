@@ -102,7 +102,6 @@
 			if (data.type === 'cc:message_limit' || data.type === 'cc:turn_end') rec.payload = payload;
 			if (data.type === 'cc:conversation') {
 				rec.messages = Array.isArray(payload.data?.chat_messages) ? payload.data.chat_messages.length : null;
-				rec.conversationId = payload.conversationId;
 			}
 			record(rec);
 		}

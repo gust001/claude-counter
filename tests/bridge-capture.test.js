@@ -202,3 +202,13 @@ test('C13 a stream opened while recording was on stops reporting when it is swit
 	// the limits themselves are still delivered to the counter
 	assert.equal(env.events('cc:message_limit').length, 1);
 });
+
+test('C14 organisation and conversation ids in the recorded path are replaced', async () => {
+	const env = createBridgeEnv({ originalFetch: async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }) });
+	env.setCapture(true);
+	await env.fetch('https://claude.ai/api/organizations/11111111-2222-4333-8444-555555555555/chat_conversations/d017d8c7-6458-4449-884f-64980589c699?tree=true');
+	await settle(50);
+	const [req] = records(env);
+	assert.equal(req.url, '/api/organizations/:id/chat_conversations/:id?tree');
+	assert.ok(!JSON.stringify(records(env)).includes('d017d8c7'));
+});

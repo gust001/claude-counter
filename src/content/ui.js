@@ -414,6 +414,13 @@
 			if (this.headerContainer && !document.contains(this.headerContainer)) this.attachHeader();
 		}
 
+		/** The usage bars are in place when they come right after the composer, or after the fallback header that sits there. */
+		_followsComposer(flowChild) {
+			const next = flowChild.nextElementSibling;
+			if (next === this.usageLine) return true;
+			return !!this.headerContainer && next === this.headerContainer && this.headerContainer.nextElementSibling === this.usageLine;
+		}
+
 		_attachUsageLine() {
 			if (!this.usageLine) return;
 
@@ -427,7 +434,7 @@
 				                          chatInput.closest('.relative.w-full.min-w-0');
 
 				if (composerFlowChild && composerFlowChild.parentElement) {
-					if (composerFlowChild.nextElementSibling !== this.usageLine) {
+					if (!this._followsComposer(composerFlowChild)) {
 						composerFlowChild.after(this.usageLine);
 					}
 					this.usageLine.style.paddingLeft = '12px';

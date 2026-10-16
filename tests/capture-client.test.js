@@ -100,6 +100,7 @@ test('K06 extension events are recorded, a conversation only by its size', async
 	assert.deepEqual(events.map((e) => e.type), ['cc:message_limit', 'cc:turn_end', 'cc:conversation']);
 	assert.deepEqual(events[0].payload, limits);
 	assert.equal(events[2].messages, 2);
+	assert.equal(events[2].conversationId, undefined, 'no conversation id in the event');
 	assert.ok(!JSON.stringify(s).includes('Tajn'));
 	assert.ok(!JSON.stringify(s).includes('tajn'));
 });

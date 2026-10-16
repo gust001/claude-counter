@@ -486,13 +486,17 @@
 		return { size: bytes.length, b64: toBase64(bytes) };
 	}
 
+	const UUID_IN_PATH = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
 	function captureUrl(url, isRpc) {
 		try {
 			const u = new URL(url);
-			if (isRpc) return u.pathname;
+			// organisation and conversation ids in the path are replaced
+			const pathname = u.pathname.replace(UUID_IN_PATH, ':id');
+			if (isRpc) return pathname;
 			// REST calls: path and the names of the query parameters, not their values.
 			const keys = Array.from(new Set(Array.from(u.searchParams.keys())));
-			return keys.length ? `${u.pathname}?${keys.join('&')}` : u.pathname;
+			return keys.length ? `${pathname}?${keys.join('&')}` : pathname;
 		} catch {
 			return '';
 		}

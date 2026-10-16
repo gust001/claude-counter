@@ -208,3 +208,19 @@ test('U15 clicking the usage line asks for a refresh', async () => {
 	for (const fn of env.ui.usageLine.listeners.click) await fn();
 	assert.equal(env.refreshes.length, 1);
 });
+
+test('U08c calling attach again does not shuffle the header and the usage bars', () => {
+	const env = createUiEnv();
+	const { flow } = env.dom.buildComposer();
+	env.ui.attach();
+	env.ui.setConversationMetrics({ totalTokens: 100, cachedUntil: null });
+	const order = () => Array.from(flow.parentElement.children).map((c) => (c === flow ? 'flow' : c === env.ui.headerContainer ? 'header' : c === env.ui.usageLine ? 'usage' : '?')).join(',');
+	assert.equal(order(), 'flow,header,usage');
+	for (let i = 0; i < 5; i++) {
+		env.ui.attach();
+		env.ui.attachUsageLine();
+		env.ui.tick();
+		for (const observer of env.dom.observers) observer.cb([]);
+		assert.equal(order(), 'flow,header,usage', `round ${i}`);
+	}
+});
