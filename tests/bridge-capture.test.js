@@ -187,3 +187,18 @@ test('C12 a missing document or broken fetch never breaks the page', async () =>
 	env.setCapture(true);
 	await assert.rejects(env.fetch(STREAM_URL, { method: 'POST', body: new Uint8Array([1]) }), /Failed to fetch/);
 });
+
+test('C13 a stream opened while recording was on stops reporting when it is switched off', async () => {
+	const chunks = [frame('text_delta_emoji'), frame('limits_5h_first'), frame('end_cadence')];
+	const env = createBridgeEnv({ originalFetch: async () => streamResponse(chunks, { delayMs: 15 }) });
+	env.setCapture(true);
+	const reading = readAll(await env.fetch(STREAM_URL, { method: 'POST', body: new Uint8Array([1]) }));
+	await settle(5);
+	env.setCapture(false);
+	await reading;
+	await settle(80);
+	const frames = records(env).filter((r) => r.kind === 'frame');
+	assert.ok(frames.length < 3, `frames after switch off: ${frames.length}`);
+	// the limits themselves are still delivered to the counter
+	assert.equal(env.events('cc:message_limit').length, 1);
+});

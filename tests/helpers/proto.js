@@ -93,11 +93,12 @@ function snapshotPayload(cursor, title, state) {
 }
 
 // Limits payload built from scratch, so tests can vary the window order and field numbers.
+// A utilization of null leaves the double out, the way the server does for 0.0 (proto3 default).
 function limitsPayload({ cursor = '1791743563668-0', windows, claim = 'five_hour', overageReason = 'overage_not_provisioned', eventField = 4, windowField = 13 } = {}) {
 	const entries = windows.map(([key, status, resetsAt, utilization]) => [
 		windowField,
 		'm',
-		[[1, 's', key], [2, 'm', [[1, 'v', status], [2, 'm', [[1, 'v', resetsAt]]], [3, 'd', utilization]]]]
+		[[1, 's', key], [2, 'm', [[1, 'v', status], [2, 'm', [[1, 'v', resetsAt]]], ...(utilization === null ? [] : [[3, 'd', utilization]])]]]
 	]);
 	const limits = [[1, 'v', 1], [5, 'v', 0], [6, 's', overageReason], [9, 's', claim], ...entries];
 	return encodeFields([[1, 'm', [[10, 'm', [[1, 's', cursor]]], [11, 'v', 2], [eventField, 'm', limits]]]]);

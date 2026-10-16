@@ -189,6 +189,7 @@
 	// again every second.
 	let nextUsageAttemptMs = Date.now() + 60 * 60 * 1000;
 	let usageFetchInFlight = false;
+	let usageFailures = 0; // failed requests in a row; the retry gets longer (1, 2, 4, ... minutes, at most an hour)
 	let restoreAttemptedForOrg = null;
 	const USAGE_WINDOW_KEYS = ['five_hour', 'seven_day'];
 	const USAGE_POLL_MS = 60 * 60 * 1000;
@@ -235,7 +236,12 @@
 			seven_day: normalized.seven_day || previous.seven_day
 		};
 		expireWindows(now);
-		if (source !== 'cache') nextUsageAttemptMs = now + USAGE_POLL_MS;
+		if (source === 'cache') {
+			// A saved window that ended while the page was closed is stale: ask for fresh data right away.
+			if (USAGE_WINDOW_KEYS.some((key) => usageState[key]?.expired)) nextUsageAttemptMs = now;
+		} else {
+			nextUsageAttemptMs = now + USAGE_POLL_MS;
+		}
 		if (source !== 'cache') persistUsage();
 		ui.setUsage(usageState);
 	}
@@ -314,7 +320,12 @@
 			usageFetchInFlight = false;
 		}
 
-		if (!raw || typeof raw !== 'object') return;
+		if (!raw || typeof raw !== 'object') {
+			usageFailures += 1;
+			nextUsageAttemptMs = Date.now() + Math.min(USAGE_RETRY_MS * 2 ** (usageFailures - 1), USAGE_POLL_MS);
+			return;
+		}
+		usageFailures = 0;
 		nextUsageAttemptMs = Date.now() + USAGE_POLL_MS;
 
 		// Endpoint reachable but reports no windows (free plan): keep what we know, never wipe the saved snapshot.
@@ -371,7 +382,8 @@
 	async function processConversationPayload({ orgId, conversationId, data }) {
 		if (!conversationId || conversationId !== currentConversationId) return;
 		updateOrgIdIfNeeded(orgId);
-		if (!data) return;
+		// Not a conversation (an error body, for example): keep what is shown.
+		if (!data || !Array.isArray(data.chat_messages)) return;
 
 		const seq = ++metricsSeq;
 		const metrics = await CC.tokens.computeConversationMetrics(data);
@@ -399,10 +411,13 @@
 	// New interface: the page does not fetch the conversation JSON when a reply is done, so the
 	// bridge announces the end of a reply (cc:turn_end) and the conversation is read again here.
 	// The server may need a moment to store the new messages, hence the retries.
-	async function refreshAfterTurn(conversationId, knownCount) {
+	let turnRefreshId = 0;
+
+	async function refreshAfterTurn(conversationId, knownCount, id) {
 		for (const delayMs of [1200, 5000, 12000]) {
 			await sleep(delayMs);
-			if (currentConversationId !== conversationId) return;
+			// Left the chat, or a newer end of a reply took over.
+			if (currentConversationId !== conversationId || id !== turnRefreshId) return;
 			await refreshConversation();
 			await metricsDone;
 			if ((trunkCountByConversation.get(conversationId) ?? -1) > knownCount) return;
@@ -413,7 +428,8 @@
 		if (!currentConversationId) return;
 		const conversationId = currentConversationId;
 		provisionalCache = { conversationId, until: Date.now() + CC.CONST.CACHE_WINDOW_MS };
-		refreshAfterTurn(conversationId, trunkCountByConversation.get(conversationId) ?? -1).catch(() => {});
+		const id = ++turnRefreshId;
+		refreshAfterTurn(conversationId, trunkCountByConversation.get(conversationId) ?? -1, id).catch(() => {});
 	}
 
 	CC.bridge.on('cc:generation_start', handleGenerationStart);

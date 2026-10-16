@@ -274,8 +274,16 @@
 
 		const value = readFields(valueField.value);
 		const utilizationField = firstField(value, 3, 1);
-		if (!utilizationField) return null;
-		const utilization = doubleOf(utilizationField.value);
+		let utilization;
+		if (utilizationField) {
+			utilization = doubleOf(utilizationField.value);
+		} else if (!strictKeys && (firstField(value, 1, 0) || firstField(value, 2, 2))) {
+			// protobuf leaves out a double that is 0, so an entry with a status or reset time but no
+			// double is a window with nothing used
+			utilization = 0;
+		} else {
+			return null;
+		}
 		if (!Number.isFinite(utilization)) return null;
 		if (strictKeys && (utilization < 0 || utilization > 10)) return null;
 
@@ -456,6 +464,8 @@
 
 	function captureEmit(record) {
 		try {
+			// A stream opened while recording was on must stop reporting when it is switched off.
+			if (!captureActive()) return;
 			post('cc:capture_record', { t: Date.now(), ...record });
 		} catch {
 			// ignore
@@ -627,7 +637,12 @@
 					method: 'GET',
 					credentials: 'include'
 				});
+				if (!res.ok) throw new Error(`HTTP ${res.status}`);
 				const json = await res.json();
+				// An error body or anything else that is not a conversation is a failure, not an empty chat.
+				if (!json || !(json.chat_messages || json.uuid || json.current_leaf_message_uuid)) {
+					throw new Error('Not a conversation');
+				}
 				post('cc:conversation', { orgId, conversationId, data: json });
 				postResponse(requestId, true, json, null);
 				return;

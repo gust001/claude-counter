@@ -332,3 +332,48 @@ test('bridge still answers the content script requests (hash)', async () => {
 	assert.ok(reply && reply.ok);
 	assert.match(reply.payload.hash, /^[0-9a-f]{16}$/);
 });
+
+test('T14 a window without a utilization double is a window with nothing used (proto3 leaves out 0.0)', async () => {
+	const payload = proto.limitsPayload({ windows: [['5h', 1, 1791749400, null], ['7d', 1, 1791990000, 0.25]] });
+	const { env } = await runStream([proto.connectFrame(0, payload)]);
+	assert.equal(limits(env).length, 1);
+	const [msg] = limits(env);
+	assert.deepEqual(msg.windows['5h'], { status: 1, resets_at: 1791749400, utilization: 0 });
+	assert.equal(msg.windows['7d'].utilization, 0.25);
+});
+
+test('T14b an entry with neither status, reset time nor utilization is not invented', async () => {
+	const payload = proto.limitsPayload({ windows: [['5h', 0, 0, null]] });
+	const { env } = await runStream([proto.connectFrame(0, payload)]);
+	const [msg] = limits(env);
+	// status 0 and resets_at 0 are still present as fields, so the entry is a window of zero use;
+	// what must never happen is a utilization that is NaN or missing
+	if (msg) assert.ok(Number.isFinite(msg.windows['5h'].utilization));
+});
+
+test('T15 conversation request: an error status or an error body is a failed request, not an empty chat', async () => {
+	const cases = [
+		['HTTP 429', () => new Response('{"error":"slow down"}', { status: 429 })],
+		['error body with 200', () => new Response('{"type":"error","error":{"type":"overloaded_error"}}', { status: 200 })],
+		['not JSON', () => new Response('<html>blocked</html>', { status: 200 })]
+	];
+	for (const [name, make] of cases) {
+		const env = createBridgeEnv({ originalFetch: async () => make() });
+		const id = env.request('conversation', { orgId: 'o', conversationId: 'c' });
+		await settle(30);
+		const reply = env.messages.find((m) => m.type === 'cc:response' && m.requestId === id);
+		assert.ok(reply, name);
+		assert.equal(reply.ok, false, name);
+		assert.equal(env.events('cc:conversation').length, 0, name);
+	}
+});
+
+test('T15b conversation request: a real conversation is delivered and answered', async () => {
+	const body = { uuid: 'c', chat_messages: [], current_leaf_message_uuid: null };
+	const env = createBridgeEnv({ originalFetch: async () => new Response(JSON.stringify(body), { status: 200 }) });
+	const id = env.request('conversation', { orgId: 'o', conversationId: 'c' });
+	await settle(30);
+	const reply = env.messages.find((m) => m.type === 'cc:response' && m.requestId === id);
+	assert.equal(reply.ok, true);
+	assert.equal(env.events('cc:conversation').length, 1);
+});

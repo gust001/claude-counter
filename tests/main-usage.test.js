@@ -33,7 +33,7 @@ test('M01 free plan: /usage reports nothing, it is asked once and then only once
 	assert.equal(env.calls.usageRequests.length, 3);
 });
 
-test('M02 a failed /usage request is retried after a minute, a valid answer after an hour', async () => {
+test('M02 a failed /usage request is retried after a minute, then later and later; a valid answer after an hour', async () => {
 	let fail = true;
 	const env = await createMainEnv({
 		storage: orgStored,
@@ -45,17 +45,35 @@ test('M02 a failed /usage request is retried after a minute, a valid answer afte
 	});
 	assert.equal(env.calls.usageRequests.length, 1);
 	await env.clock.advance(MIN + 5000);
-	assert.equal(env.calls.usageRequests.length, 2);
+	assert.equal(env.calls.usageRequests.length, 2, 'first retry after a minute');
 	await env.clock.advance(MIN);
-	assert.equal(env.calls.usageRequests.length, 3);
+	assert.equal(env.calls.usageRequests.length, 2, 'the second retry waits longer');
+	await env.clock.advance(MIN);
+	assert.equal(env.calls.usageRequests.length, 3, 'two minutes after the second failure');
 
 	fail = false;
-	await env.clock.advance(MIN);
+	await env.clock.advance(4 * MIN + 5000);
 	assert.equal(env.calls.usageRequests.length, 4, 'this one succeeds');
 	await env.clock.advance(30 * MIN);
 	assert.equal(env.calls.usageRequests.length, 4, 'valid answer: wait');
 	await env.clock.advance(31 * MIN);
 	assert.equal(env.calls.usageRequests.length, 5);
+});
+
+test('M02a an account where /usage always fails is not hammered: the wait grows to an hour', async () => {
+	const env = await createMainEnv({
+		storage: orgStored,
+		startMs: START,
+		usage: async () => {
+			throw new Error('403');
+		}
+	});
+	await env.clock.advance(3 * HOUR);
+	// 1, 2, 4, 8, 16, 32 minutes, then every hour: at most about 9 requests in three hours
+	assert.ok(env.calls.usageRequests.length <= 9, `requests: ${env.calls.usageRequests.length}`);
+	assert.ok(env.calls.usageRequests.length >= 6);
+	const gaps = env.calls.usageRequests.slice(1).map((r, i) => r.at - env.calls.usageRequests[i].at);
+	assert.ok(gaps.every((g, i) => i === 0 || g >= gaps[i - 1] - 2000), 'gaps never shrink');
 });
 
 test('M02b an unusable answer (no object) counts as a failure', async () => {
@@ -167,12 +185,38 @@ test('M05b both windows can end, and a new reply starts a fresh window', async (
 	assert.equal(Math.round(u.seven_day.utilization), 30);
 });
 
-test('M06 saved usage whose window ended while the page was closed shows 0%', async () => {
+test('M06 saved usage whose window ended while the page was closed shows 0%, and fresh data is asked for at once', async () => {
 	const saved = { orgId: ORG, usage: { five_hour: liveWindow(71, START - HOUR), seven_day: liveWindow(12, START + 24 * HOUR) } };
+	// a paid plan: /usage knows the real value (used elsewhere, e.g. in another app)
+	const env = await createMainEnv({
+		storage: { ...orgStored, claude_usage_state: saved },
+		startMs: START,
+		usage: async () => ({ five_hour: { utilization: 63, resets_at: new Date(START + 4 * HOUR).toISOString() }, seven_day: null })
+	});
+	const first = env.lastUsage();
+	assert.deepEqual(first.five_hour, { expired: true });
+	assert.equal(first.seven_day.utilization, 12);
+	assert.equal(env.calls.usageRequests.length, 0);
+
+	await env.clock.advance(2000);
+	assert.equal(env.calls.usageRequests.length, 1, 'asked on the first tick, not after an hour');
+	assert.equal(env.lastUsage().five_hour.utilization, 63);
+	assert.equal(env.lastUsage().seven_day.utilization, 12);
+});
+
+test('M06b saved usage that is still live does not trigger a request', async () => {
+	const saved = { orgId: ORG, usage: { five_hour: liveWindow(10, START + HOUR), seven_day: liveWindow(12, START + 24 * HOUR) } };
 	const env = await createMainEnv({ storage: { ...orgStored, claude_usage_state: saved }, startMs: START, usage: emptyUsage });
-	const u = env.lastUsage();
-	assert.deepEqual(u.five_hour, { expired: true });
-	assert.equal(u.seven_day.utilization, 12);
+	await env.clock.advance(30 * MIN);
+	assert.equal(env.calls.usageRequests.length, 0);
+});
+
+test('M06c on the free plan the stale restore asks once and then waits an hour', async () => {
+	const saved = { orgId: ORG, usage: { five_hour: liveWindow(71, START - HOUR), seven_day: null } };
+	const env = await createMainEnv({ storage: { ...orgStored, claude_usage_state: saved }, startMs: START, usage: emptyUsage });
+	await env.clock.advance(30 * MIN);
+	assert.equal(env.calls.usageRequests.length, 1);
+	assert.deepEqual(env.lastUsage().five_hour, { expired: true });
 });
 
 test('M07 /usage with nothing in it never wipes what is known or saved', async () => {
@@ -323,4 +367,25 @@ test('M13 an older read that finishes late does not overwrite a newer one', asyn
 	await Promise.all([slow, fast]);
 	const m = env.calls.setMetrics[env.calls.setMetrics.length - 1];
 	assert.equal(m.totalTokens, 40, 'the newer (four messages) read is what stays');
+});
+
+test('M14 several ends of a reply in a row: only the newest follow-up read loop runs', async () => {
+	const env = await createMainEnv({ storage: orgStored, startMs: START, usage: emptyUsage, conversations: { [CONV]: twoMessages(START - HOUR) } });
+	for (let i = 0; i < 4; i++) {
+		await env.emit('cc:turn_end', {});
+		await env.clock.advance(50);
+	}
+	await env.clock.advance(60000);
+	// the initial read plus one loop of three, not four loops
+	assert.equal(env.calls.conversationRequests.length, 1 + 3);
+});
+
+test('M15 a conversation read that is not a conversation (error body) keeps the header', async () => {
+	const env = await createMainEnv({ storage: orgStored, startMs: START, usage: emptyUsage, conversations: { [CONV]: twoMessages(START - 60000) } });
+	const before = env.calls.setMetrics.length;
+	const last = env.calls.setMetrics[before - 1];
+	await env.emit('cc:conversation', { orgId: ORG, conversationId: CONV, data: { type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } } });
+	await env.clock.flush();
+	assert.equal(env.calls.setMetrics.length, before, 'nothing changed');
+	assert.equal(last.totalTokens, 20);
 });
