@@ -121,10 +121,12 @@ test('R09 prepareRecord: unmasked mode keeps the bytes, end frame keeps its trai
 	const plain = await redact.prepareRecord({ kind: 'frame', id: 1, flags: 0, b64: Buffer.from(inner).toString('base64') }, false);
 	assert.ok(Buffer.from(plain.b64, 'base64').includes(Buffer.from('hello')));
 
-	const trailer = JSON.stringify({ metadata: { 'stream-close-reason': 'cadence' } });
+	const trailer = JSON.stringify({ metadata: { 'stream-close-reason': ['cadence'] } });
 	const end = await redact.prepareRecord({ kind: 'frame', id: 1, flags: 2, b64: Buffer.from(trailer).toString('base64') }, true);
-	assert.equal(end.text, trailer);
+	assert.equal(end.text, trailer, 'the close reason is kept');
 	assert.equal(end.b64, undefined);
+	const unmasked = await redact.prepareRecord({ kind: 'frame', id: 1, flags: 2, b64: Buffer.from(trailer).toString('base64') }, false);
+	assert.equal(unmasked.text, trailer);
 });
 
 test('R10 prepareRecord: corrupt gzip and unknown content are dropped, not stored', async () => {
@@ -149,4 +151,98 @@ test('R11 prepareRecord: JSON bodies are masked as text', async () => {
 test('R12 records without a body pass through untouched', async () => {
 	const rec = { kind: 'res', id: 1, status: 200, ct: 'application/connect+proto' };
 	assert.deepEqual(await redact.prepareRecord(rec, true), rec);
+});
+
+test('R13 trailer: the close reason and the error code stay, an error message is masked', async () => {
+	const trailer = JSON.stringify({ error: { code: 'resource_exhausted', message: 'Chat "Tajný projekt" is too long' }, metadata: { 'Stream-Close-Reason': ['max_age'] } });
+	const end = await redact.prepareRecord({ kind: 'frame', id: 1, flags: 2, b64: Buffer.from(trailer).toString('base64') }, true);
+	const parsed = JSON.parse(end.text);
+	assert.equal(parsed.error.code, 'resource_exhausted');
+	assert.deepEqual(parsed.metadata['Stream-Close-Reason'], ['max_age']);
+	assert.equal(parsed.error.message, 'x'.repeat('Chat "Tajný projekt" is too long'.length));
+	assert.ok(!end.text.includes('Tajn'));
+});
+
+test('R14 the sweep: text that parses as protobuf does not leak through tags and small numbers', () => {
+	// Pairs of (tag, value) with a varint tag (h p x H P X) followed by any letter parse as legal protobuf,
+	// and a trailing length-delimited field makes the whole thing look like a message, not like text.
+	const tags = 'hpxHPX';
+	const letters = 'abcdefghijklmnopqrstuvwyz';
+	let seed = 12345;
+	const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+	const pick = (str) => str[Math.floor(rnd() * str.length)];
+	let leaksIfUnswept = 0;
+	for (let i = 0; i < 300; i++) {
+		let text = '';
+		const pairs = 2 + Math.floor(rnd() * 5);
+		for (let j = 0; j < pairs; j++) text += pick(tags) + pick(letters);
+		text += `b${String.fromCharCode(5)}xxxxx`;
+		const msg = proto.encodeFields([[1, 'm', [[2, 's', text]]]]);
+
+		// sanity: the walker really treats this text as a message (that is what the test is about)
+		const inner = msg.subarray(msg.indexOf(Buffer.from(text.slice(0, 2))) );
+		assert.ok(redact.parseMessage(inner, 0, inner.length), 'test text is a legal message');
+
+		const out = Buffer.from(redact.redactProtobuf(msg)).toString('latin1');
+		assert.equal(out.match(/[A-Za-wyz]{4,}/g), null, `leak in ${JSON.stringify(text)} -> ${JSON.stringify(out)}`);
+		if (/[A-Za-z]{4,}/.test(text.replace(/b\x05xxxxx$/, ''))) leaksIfUnswept++;
+	}
+	assert.ok(leaksIfUnswept > 50, 'the generated texts do contain words of four letters or more');
+});
+
+test('R15 the sweep does not touch what the counter needs: all fixture frames keep their meaning', async () => {
+	for (const name of Object.keys(fixtures.frames)) {
+		const original = frame(name);
+		if (original[0] & 2) continue; // trailer, not protobuf
+		const masked = redact.redactProtobuf(payloadOf(original));
+		const before = redact.parseMessage(payloadOf(original), 0, original.length - 5);
+		const after = redact.parseMessage(masked, 0, masked.length);
+		assert.deepEqual(after, before, name);
+	}
+	// every utilisation double in the limits frames is intact byte for byte
+	for (const name of ['limits_7d_first', 'limits_5h_first', 'limits_5h_first_turn2']) {
+		const original = payloadOf(frame(name));
+		const masked = redact.redactProtobuf(original);
+		for (const value of [0.76, 0.25, 0.01, 0.02, 0.03]) {
+			const d = Buffer.alloc(8);
+			d.writeDoubleLE(value);
+			if (Buffer.from(original).includes(d)) assert.ok(Buffer.from(masked).includes(d), `${name} ${value}`);
+		}
+	}
+});
+
+test('R16 a request body made of Connect frames is masked frame by frame', async () => {
+	const secret = 'Soukromá zpráva do chatu';
+	const inner = proto.encodeFields([[1, 's', '00000000-0000-4000-8000-000000000042'], [2, 'm', [[1, 's', secret]]], [3, 'v', 5]]);
+	const gz = zlib.gzipSync(inner);
+	const body = Buffer.concat([proto.connectFrame(0, inner), proto.connectFrame(1, gz)]);
+	const res = await redact.prepareRecord({ kind: 'req', id: 1, ct: 'application/connect+proto', b64: body.toString('base64') }, true);
+
+	const out = Buffer.from(res.b64, 'base64');
+	assert.ok(!out.includes(Buffer.from('Soukrom')), 'text gone');
+	assert.ok(!out.includes(Buffer.from('zpráv')));
+	assert.ok(out.includes(Buffer.from('00000000-0000-4000-8000-000000000042')), 'ids stay');
+	assert.equal(res.wasGzip, true);
+	// two clean frames, none of them gzip any more
+	assert.equal(out[0], 0);
+	const len1 = out.readUInt32BE(1);
+	assert.equal(out[5 + len1], 0);
+	assert.equal(out.readUInt32BE(5 + len1 + 1), len1);
+	assert.equal(5 + len1 + 5 + len1, out.length);
+	assert.equal(res.size, out.length);
+});
+
+test('R16b a request body that is not a clean sequence of frames is masked as a whole', async () => {
+	const res = await redact.prepareRecord({ kind: 'req', id: 1, ct: 'application/connect+proto', b64: Buffer.from('plain text secret').toString('base64') }, true);
+	assert.ok(!Buffer.from(res.b64, 'base64').includes(Buffer.from('secret')));
+	const truncated = proto.connectFrame(0, Buffer.from('abcdefghij')).subarray(0, 9);
+	const res2 = await redact.prepareRecord({ kind: 'req', id: 1, ct: 'application/connect+proto', b64: Buffer.from(truncated).toString('base64') }, true);
+	assert.ok(!Buffer.from(res2.b64, 'base64').includes(Buffer.from('abcdef')));
+});
+
+test('R16c unmasked mode still unpacks a gzip frame and keeps the content', async () => {
+	const inner = proto.encodeFields([[2, 's', 'visible']]);
+	const body = proto.connectFrame(1, zlib.gzipSync(inner));
+	const res = await redact.prepareRecord({ kind: 'req', id: 1, ct: 'application/connect+proto', b64: Buffer.from(body).toString('base64') }, false);
+	assert.ok(Buffer.from(res.b64, 'base64').includes(Buffer.from('visible')));
 });

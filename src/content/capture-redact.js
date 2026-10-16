@@ -34,11 +34,34 @@
 		/^type\.googleapis\.com\/[\w.]+$/,
 		/^\d{13}-\d+$/, // stream cursors
 		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, // ids, needed to follow references
-	/^[a-z]{3,6}_[0-9a-zA-Z]{12,}$/ // prefixed ids such as content block ids
+		/^[a-z]{3,6}_[0-9a-zA-Z]{12,}$/ // prefixed ids such as content block ids
 	];
 
-	function isAllowedText(text) {
-		if (ALLOW_EXACT.has(text)) return true;
+	// Words that may stay in the end-of-stream trailer (why a stream was closed, and the Connect error
+	// codes). Everything else in a trailer, such as an error message, is masked.
+	const TRAILER_ALLOWED = new Set([
+		'cadence',
+		'max_age',
+		'canceled',
+		'unknown',
+		'invalid_argument',
+		'deadline_exceeded',
+		'not_found',
+		'already_exists',
+		'permission_denied',
+		'resource_exhausted',
+		'failed_precondition',
+		'aborted',
+		'out_of_range',
+		'unimplemented',
+		'internal',
+		'unavailable',
+		'data_loss',
+		'unauthenticated'
+	]);
+
+	function isAllowedText(text, extra) {
+		if (ALLOW_EXACT.has(text) || (extra && extra.has(text))) return true;
 		return ALLOW_PATTERNS.some((re) => re.test(text));
 	}
 
@@ -75,8 +98,8 @@
 				fields.push({ number, wireType });
 			} else if (wireType === 1) {
 				if (pos + 8 > end) return null;
+				fields.push({ number, wireType, start: pos, end: pos + 8 });
 				pos += 8;
-				fields.push({ number, wireType });
 			} else if (wireType === 5) {
 				if (pos + 4 > end) return null;
 				pos += 4;
@@ -118,7 +141,19 @@
 		buf.fill(value, start, end);
 	}
 
-	function redactRange(buf, start, end, depth) {
+	/** A fixed64 that is a believable double (0 .. 1e12), as opposed to eight bytes of text. */
+	function isPlausibleDouble(buf, start) {
+		const v = new DataView(buf.buffer, buf.byteOffset + start, 8).getFloat64(0, true);
+		if (!Number.isFinite(v)) return false;
+		const a = Math.abs(v);
+		return a === 0 || (a >= 1e-9 && a <= 1e12);
+	}
+
+	/**
+	 * `keep` collects the ranges that must survive the final sweep: text that is on the allow list and
+	 * doubles that look like real numbers (utilisation).
+	 */
+	function redactRange(buf, start, end, depth, keep) {
 		const len = end - start;
 		if (len === 0) return;
 
@@ -129,7 +164,8 @@
 			const looksLikeText = ratio >= 0.9 && fields && fields.every((f) => f.wireType !== 2);
 			if (fields && fields.length > 0 && !looksLikeText) {
 				for (const f of fields) {
-					if (f.wireType === 2) redactRange(buf, f.start, f.end, depth + 1);
+					if (f.wireType === 2) redactRange(buf, f.start, f.end, depth + 1, keep);
+					else if (f.wireType === 1 && isPlausibleDouble(buf, f.start)) keep.push([f.start, f.end]);
 				}
 				return;
 			}
@@ -137,34 +173,60 @@
 
 		const text = ratio >= 0.9 ? decodeText(buf, start, end) : null;
 		if (text !== null) {
-			if (!isAllowedText(text)) maskRange(buf, start, end, 0x78);
+			if (isAllowedText(text)) keep.push([start, end]);
+			else maskRange(buf, start, end, 0x78);
 			return;
 		}
 		maskRange(buf, start, end, 0x00);
 	}
 
+	const STRAY_RUN = 4;
+	const isLetter = (b) => (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a);
+
+	/**
+	 * Last sweep. When a piece of text happens to parse as protobuf, its characters end up as tags,
+	 * lengths and small numbers, which the walker keeps. Any run of four or more ASCII letters that is
+	 * not on the allow list is therefore masked as well.
+	 */
+	function sweepStrayText(buf, keep) {
+		const kept = new Uint8Array(buf.length);
+		for (const [a, b] of keep) kept.fill(1, a, b);
+		let runStart = -1;
+		for (let i = 0; i <= buf.length; i++) {
+			const letter = i < buf.length && isLetter(buf[i]) && !kept[i];
+			if (letter) {
+				if (runStart < 0) runStart = i;
+			} else if (runStart >= 0) {
+				if (i - runStart >= STRAY_RUN) buf.fill(0x78, runStart, i);
+				runStart = -1;
+			}
+		}
+	}
+
 	/** Returns a masked copy of a protobuf message. */
 	function redactProtobuf(bytes) {
 		const copy = new Uint8Array(bytes);
-		redactRange(copy, 0, copy.length, 0);
+		const keep = [];
+		redactRange(copy, 0, copy.length, 0, keep);
+		sweepStrayText(copy, keep);
 		return copy;
 	}
 
 	/** JSON text: strings are replaced by 'x' of the same length, numbers and booleans stay. */
-	function redactJsonValue(value) {
-		if (typeof value === 'string') return isAllowedText(value) ? value : 'x'.repeat(value.length);
-		if (Array.isArray(value)) return value.map(redactJsonValue);
+	function redactJsonValue(value, extra) {
+		if (typeof value === 'string') return isAllowedText(value, extra) ? value : 'x'.repeat(value.length);
+		if (Array.isArray(value)) return value.map((v) => redactJsonValue(v, extra));
 		if (value && typeof value === 'object') {
 			const out = {};
-			for (const key of Object.keys(value)) out[key] = redactJsonValue(value[key]);
+			for (const key of Object.keys(value)) out[key] = redactJsonValue(value[key], extra);
 			return out;
 		}
 		return value;
 	}
 
-	function redactJsonText(text) {
+	function redactJsonText(text, extra) {
 		try {
-			return JSON.stringify(redactJsonValue(JSON.parse(text)));
+			return JSON.stringify(redactJsonValue(JSON.parse(text), extra));
 		} catch {
 			return 'x'.repeat(text.length);
 		}
@@ -222,6 +284,62 @@
 		return typeof ct === 'string' && ct.includes('json');
 	}
 
+	function isEnvelopeType(ct) {
+		return typeof ct === 'string' && ct.includes('connect') && !ct.includes('json');
+	}
+
+	/**
+	 * Splits a body made of Connect frames (flags, 4 bytes length, payload), unpacks gzip frames and
+	 * masks each payload. Returns null when the bytes are not a clean sequence of frames.
+	 */
+	async function redactEnvelope(bytes, redact) {
+		const parts = [];
+		let wasGzip = false;
+		let pos = 0;
+		let total = 0;
+		while (pos < bytes.length) {
+			if (pos + 5 > bytes.length) return null;
+			const flags = bytes[pos];
+			const length = bytes[pos + 1] * 2 ** 24 + (bytes[pos + 2] << 16) + (bytes[pos + 3] << 8) + bytes[pos + 4];
+			if (flags > 3 || pos + 5 + length > bytes.length) return null;
+			let payload = bytes.subarray(pos + 5, pos + 5 + length);
+			pos += 5 + length;
+
+			let outFlags = flags;
+			if (flags & 2) {
+				const text = new TextDecoder().decode(payload);
+				payload = new TextEncoder().encode(redact ? redactJsonText(text, TRAILER_ALLOWED) : text);
+			} else {
+				if (flags & 1) {
+					const unpacked = await gunzip(payload);
+					if (!unpacked) return null;
+					payload = unpacked;
+					outFlags &= ~1;
+					wasGzip = true;
+				}
+				if (redact) payload = redactProtobuf(payload);
+			}
+
+			const frame = new Uint8Array(5 + payload.length);
+			frame[0] = outFlags;
+			frame[1] = Math.floor(payload.length / 2 ** 24) & 0xff;
+			frame[2] = (payload.length >> 16) & 0xff;
+			frame[3] = (payload.length >> 8) & 0xff;
+			frame[4] = payload.length & 0xff;
+			frame.set(payload, 5);
+			parts.push(frame);
+			total += frame.length;
+		}
+		if (parts.length === 0) return null;
+		const result = new Uint8Array(total);
+		let offset = 0;
+		for (const f of parts) {
+			result.set(f, offset);
+			offset += f.length;
+		}
+		return { bytes: result, wasGzip };
+	}
+
 	/**
 	 * Turns a raw record from the page into what is stored: gzip frames are unpacked, and when
 	 * `redact` is on, bodies are masked. The body ends up in `b64` (binary) or `text` (JSON).
@@ -242,9 +360,10 @@
 
 		const isFrame = record.kind === 'frame';
 		if (isFrame && record.flags & 2) {
-			// End-of-stream trailer: JSON with the close reason, no conversation content.
+			// End-of-stream trailer: JSON with the close reason. An error message in it is masked.
 			delete out.b64;
-			out.text = new TextDecoder().decode(bytes).slice(0, 2000);
+			const text = new TextDecoder().decode(bytes);
+			out.text = (redact ? redactJsonText(text, TRAILER_ALLOWED) : text).slice(0, 2000);
 			return out;
 		}
 
@@ -259,6 +378,18 @@
 			out.flags = record.flags & ~1;
 			out.wasGzip = true;
 			out.size = bytes.length;
+		}
+
+		if (!isFrame && isEnvelopeType(record.ct)) {
+			// A request body made of Connect frames: every frame is masked on its own, so that the
+			// structure of the request stays readable.
+			const enveloped = await redactEnvelope(bytes, redact);
+			if (enveloped) {
+				out.b64 = bytesToBase64(enveloped.bytes);
+				out.size = enveloped.bytes.length;
+				if (enveloped.wasGzip) out.wasGzip = true;
+				return out;
+			}
 		}
 
 		const asJson = !isFrame && isJsonType(record.ct);
@@ -284,6 +415,7 @@
 		redactProtobuf,
 		redactJsonText,
 		redactJsonValue,
+		redactEnvelope,
 		isAllowedText,
 		parseMessage,
 		prepareRecord,

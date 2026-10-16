@@ -92,3 +92,19 @@ test('S06 a failing storage never throws into the caller', async () => {
 	assert.doesNotThrow(() => store.add({ t: 1, kind: 'x' }));
 	await store.flush();
 });
+
+test('S07 a stopped store adds nothing and writes nothing, also not what was already scheduled', async () => {
+	const fake = createFakeChrome();
+	const store = makeStore(fake);
+	store.add({ t: 1, kind: 'req', id: 1 });
+	await store.flush();
+	const key = Object.keys(fake.data)[0];
+
+	store.add({ t: 2, kind: 'req', id: 2 }); // schedules a write
+	await promiseStorage(fake).remove([key]); // the user deletes the recording
+	store.stop();
+	assert.equal(store.add({ t: 3, kind: 'req', id: 3 }), false);
+	await new Promise((r) => setTimeout(r, 40));
+	await store.flush();
+	assert.deepEqual(Object.keys(fake.data), [], 'the session did not come back');
+});

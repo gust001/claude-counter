@@ -56,7 +56,7 @@ Both methods run side by side; whichever the page uses is picked up.
 
 ## Traffic recording (for developers)
 
-Off by default. Open the extension's settings (`chrome://extensions` → Claude Counter → Details → Extension options) to record what claude.ai and its server exchange, e.g. to analyse a change of the interface. Message text and binary values are masked unless you switch masking off. A recording is kept in the browser (about 2.5 MB per page load, the newest three) until you download or delete it. It is a best-effort heuristic: look at a file before you share it.
+Off by default. Open the extension's settings (`chrome://extensions` → Claude Counter → Details → Extension options) to record what claude.ai and its server exchange, e.g. to analyse a change of the interface. Message text and binary values are masked unless you switch masking off. Conversation ids in addresses are always replaced. A recording is kept in the browser (about 2.5 MB per page load, the newest three) until you download or delete it; deleting it stops open tabs from recording until they are reloaded. It is a best-effort heuristic: look at a file before you share it.
 
 ## Development
 

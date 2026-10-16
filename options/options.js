@@ -112,8 +112,17 @@
 		render();
 	});
 
+	// A recording is written every couple of seconds while a page is open, so the list is redrawn at
+	// most every two seconds, and only for changes that concern the recording.
+	let renderTimer = null;
 	chrome.storage.onChanged.addListener((changes, areaName) => {
-		if (areaName === 'local') render();
+		if (areaName !== 'local') return;
+		const relevant = Object.keys(changes).some((k) => k === 'ccCaptureEnabled' || k === 'ccCaptureRedact' || CC.captureStore.isSessionKey(k));
+		if (!relevant || renderTimer) return;
+		renderTimer = setTimeout(() => {
+			renderTimer = null;
+			render();
+		}, 2000);
 	});
 
 	render();

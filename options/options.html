@@ -35,7 +35,8 @@
 	<label><input type="checkbox" id="redact" /> Mask message text and binary values (recommended)</label>
 	<div class="hint">
 		Masking replaces text with the letter x (same length) and keeps numbers, ids and the structure of the
-		messages. It is a best-effort heuristic, so look at the file before you share it.
+		messages. Conversation ids in page addresses are always replaced by :id. Masking is a best-effort
+		heuristic, so look at the file before you share it.
 		With masking switched off the recording contains your messages and the replies.
 	</div>
 
@@ -55,6 +56,7 @@
 	</table>
 	<p class="hint" style="margin-left:0">
 		Limits: about 2.5 MB and 2000 records per page load, the newest 3 page loads are kept.
+		When you delete the recordings, open tabs stop recording; reload a tab to start a new recording.
 	</p>
 
 	<script src="../src/content/capture-store.js"></script>

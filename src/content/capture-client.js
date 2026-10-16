@@ -31,6 +31,14 @@
 	let store = null;
 	let chain = Promise.resolve();
 
+	// A conversation id in an address would tell who is who; ids are replaced in everything stored.
+	const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+	function safePath(path) {
+		return String(path || '')
+			.replace(/\/chat\/[^/?#]+/g, '/chat/:id')
+			.replace(UUID, ':id');
+	}
+
 	function setPageFlag(on) {
 		try {
 			// bridge.js reads this on every request, so the setting takes effect without a reload.
@@ -41,9 +49,9 @@
 	}
 
 	function startSession() {
-		store = new CC.captureStore.CaptureStore({ storage, redacted: redact, url: location.pathname });
+		store = new CC.captureStore.CaptureStore({ storage, redacted: redact, url: safePath(location.pathname) });
 		store.start();
-		store.add({ t: Date.now(), kind: 'session', path: location.pathname, redacted: redact, ua: navigator.userAgent });
+		store.add({ t: Date.now(), kind: 'session', path: safePath(location.pathname), redacted: redact, ua: navigator.userAgent });
 	}
 
 	function applySettings(s) {
@@ -72,7 +80,8 @@
 		chain = chain
 			.then(() => CC.captureRedact.prepareRecord(rec, useRedact))
 			.then((prepared) => {
-				current.add(prepared);
+				// the setting may have been switched off, or the session deleted, while this was prepared
+				if (enabled && store === current) current.add(prepared);
 			})
 			.catch(() => {});
 	}
@@ -116,7 +125,13 @@
 		'.chat-project-wrapper'
 	];
 
-	function describe(el) {
+	function ariaText(label, masked) {
+		const text = String(label || '').slice(0, 40);
+		if (!text) return undefined;
+		return masked ? 'x'.repeat(text.length) : text;
+	}
+
+	function describe(el, masked) {
 		const rect = el.getBoundingClientRect();
 		const chain = [];
 		let p = el.parentElement;
@@ -127,7 +142,8 @@
 			tag: el.tagName.toLowerCase(),
 			testid: el.getAttribute('data-testid') || undefined,
 			role: el.getAttribute('role') || undefined,
-			aria: (el.getAttribute('aria-label') || '').slice(0, 40) || undefined,
+			// an aria-label can be a chat title: with masking on only its length is kept
+			aria: ariaText(el.getAttribute('aria-label'), masked),
 			cls: String(el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className || '').slice(0, 100) || undefined,
 			box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
 			parents: chain
@@ -143,7 +159,7 @@
 			const top = [];
 			for (const el of document.querySelectorAll('[data-testid], header, [role="banner"], h1')) {
 				const r = el.getBoundingClientRect();
-				if (r.height > 0 && r.top < 140 && top.length < 60) top.push(describe(el));
+				if (r.height > 0 && r.top < 140 && top.length < 60) top.push(describe(el, redact));
 			}
 
 			const testids = {};
@@ -161,7 +177,7 @@
 				t: Date.now(),
 				kind: 'dom',
 				label,
-				path: location.pathname.replace(/\/chat\/[^/?]+/, '/chat/:id'),
+				path: safePath(location.pathname),
 				viewport: [window.innerWidth, window.innerHeight],
 				anchors,
 				top,
@@ -183,7 +199,7 @@
 		if (location.pathname === lastPath) return;
 		lastPath = location.pathname;
 		if (enabled) {
-			record({ t: Date.now(), kind: 'nav', path: location.pathname.replace(/\/chat\/[^/?]+/, '/chat/:id') });
+			record({ t: Date.now(), kind: 'nav', path: safePath(location.pathname) });
 			scheduleSnapshots('nav');
 		}
 	});
@@ -198,6 +214,14 @@
 	try {
 		globalThis.chrome.storage.onChanged.addListener((changes, areaName) => {
 			if (areaName !== 'local') return;
+
+			// The recording of this page was deleted (settings page, or the newest-three rule): stop,
+			// otherwise the next write would bring it back.
+			if (store && changes[store.key] && changes[store.key].newValue === undefined) {
+				store.stop();
+				store = null;
+			}
+
 			if (!('ccCaptureEnabled' in changes) && !('ccCaptureRedact' in changes)) return;
 			storage.get(SETTINGS_DEFAULTS).then((s) => {
 				const wasEnabled = enabled;

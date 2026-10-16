@@ -12,7 +12,7 @@
 		maxRecords: 2000,
 		maxBytes: 2500000,
 		maxSessions: 3,
-		flushDelayMs: 1000
+		flushDelayMs: 2000
 	});
 
 	function newSessionId(now = Date.now()) {
@@ -52,6 +52,20 @@
 			this._dirty = false;
 			this._writing = Promise.resolve();
 			this._started = null;
+			this._stopped = false;
+		}
+
+		/**
+		 * Ends the session for good: nothing is added or written any more. Used when the stored session
+		 * was deleted (from the settings page) so that it does not come back.
+		 */
+		stop() {
+			this._stopped = true;
+			this._dirty = false;
+			if (this._timer) {
+				clearTimeout(this._timer);
+				this._timer = null;
+			}
 		}
 
 		/** Writes the empty session and removes the oldest ones beyond the session limit. */
@@ -77,7 +91,7 @@
 
 		add(record) {
 			const s = this.session;
-			if (s.capped) return false;
+			if (s.capped || this._stopped) return false;
 			const size = approxSize(record);
 			if (s.records.length >= this.opts.maxRecords || this.bytes + size > this.opts.maxBytes) {
 				s.capped = true;
@@ -92,6 +106,7 @@
 		}
 
 		_schedule() {
+			if (this._stopped) return;
 			this._dirty = true;
 			if (this._timer) return;
 			this._timer = setTimeout(() => {
@@ -103,6 +118,7 @@
 
 		/** Persists the session now. Resolves when the write is done. */
 		flush() {
+			if (this._stopped) return this._writing;
 			if (this._timer) {
 				clearTimeout(this._timer);
 				this._timer = null;
@@ -111,7 +127,7 @@
 			this._dirty = false;
 			this._writing = this._writing
 				.then(() => this.start())
-				.then(() => this.storage.set({ [this.key]: this.session }))
+				.then(() => (this._stopped ? undefined : this.storage.set({ [this.key]: this.session })))
 				.catch(() => {});
 			return this._writing;
 		}

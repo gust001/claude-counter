@@ -188,3 +188,85 @@ test('K12 end to end: records produced by the real bridge are stored masked and 
 	assert.equal(frames[2].flags, 2);
 	assert.ok(frames[2].text.includes('cadence'));
 });
+
+test('K13 no conversation id is stored: not in the session address, the session record, the navigation', async () => {
+	const env = createContentEnv({ files: FILES, storage: { ccCaptureEnabled: true }, pathname: '/chat/d017d8c7-6458-4449-884f-64980589c699' });
+	await env.settle();
+	env.location.pathname = '/project/0b3e5d36-1c4a-4c0e-9d6f-aaaaaaaaaaaa/chat/e1111111-2222-4333-8444-555555555555';
+	env.window.dispatchEvent({ type: 'cc:urlchange' });
+	await env.settle(40);
+	await flush(env);
+	const [s] = sessionsOf(env);
+	assert.equal(s.url, '/chat/:id');
+	assert.equal(s.records[0].path, '/chat/:id');
+	const nav = s.records.find((r) => r.kind === 'nav');
+	assert.ok(!/[0-9a-f]{8}-/.test(nav.path), nav.path);
+	assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}/.test(JSON.stringify(s)), 'no uuid anywhere in the session');
+});
+
+test('K14 deleting the recording stops this page from writing it again', async () => {
+	const env = await start({ ccCaptureEnabled: true });
+	await flush(env);
+	const [key] = Object.keys(env.storageData).filter((k) => k.startsWith('ccCap_'));
+	assert.ok(key);
+
+	env.chrome.storage.local.remove([key]);
+	await env.settle(40);
+	env.send({ type: 'cc:capture_record', payload: { kind: 'req', id: 77 } });
+	await env.settle(40);
+	await flush(env);
+	await env.settle(40);
+	assert.deepEqual(Object.keys(env.storageData).filter((k) => k.startsWith('ccCap_')), [], 'not written again');
+});
+
+test('K15 records still being prepared when recording is switched off are not stored', async () => {
+	const env = await start({ ccCaptureEnabled: true });
+	const snapshot = Buffer.from(proto.snapshotPayload('1791743563669-0', 'Titulek', 1));
+	const packed = b64(zlib.gzipSync(snapshot));
+	for (let i = 0; i < 40; i++) env.send({ type: 'cc:capture_record', payload: { kind: 'frame', id: 100 + i, flags: 1, b64: packed } });
+	await new Promise((r) => setImmediate(r)); // the messages are handled, the gunzip chain is under way
+	env.chrome.storage.local.set({ ccCaptureEnabled: false });
+	await env.settle(2400); // longer than the delay of the store's own write
+	const [s] = sessionsOf(env);
+	const stored = s.records.filter((r) => r.kind === 'frame').length;
+	assert.ok(stored < 40, `stored ${stored} of 40 frames although recording was switched off`);
+});
+
+test('K16 the page snapshot keeps aria-labels only when masking is off', async () => {
+	const run = async (redactOn) => {
+		const timers = [];
+		const fakeSetTimeout = (fn, ms) => {
+			if (ms >= 2000) {
+				timers.push(fn);
+				return { unref() {} };
+			}
+			return setTimeout(fn, ms);
+		};
+		const env = createContentEnv({ files: [], storage: { ccCaptureEnabled: true, ccCaptureRedact: redactOn }, extraGlobals: { setTimeout: fakeSetTimeout } });
+		const el = {
+			tagName: 'BUTTON',
+			className: 'btn',
+			parentElement: null,
+			getBoundingClientRect: () => ({ left: 1, top: 2, width: 30, height: 10 }),
+			getAttribute: (k) => ({ 'aria-label': 'Projekt rodinný rozpočet', 'data-testid': 'chat-title-button' })[k] || null
+		};
+		env.document.body = {};
+		env.document.querySelectorAll = (sel) => (sel.includes('data-testid') ? [el] : []);
+		env.load(FILES);
+		await env.settle();
+		for (const fn of timers.splice(0)) fn();
+		await env.settle(40);
+		env.fire('pagehide');
+		await env.settle(40);
+		return sessionsOf(env)[0];
+	};
+	const masked = await run(true);
+	const dom = masked.records.find((r) => r.kind === 'dom');
+	assert.ok(dom, 'a dom record exists');
+	assert.equal(dom.top[0].testid, 'chat-title-button');
+	assert.equal(dom.top[0].aria, 'x'.repeat(24));
+	assert.ok(!JSON.stringify(masked).includes('rozpo'));
+
+	const open = await run(false);
+	assert.equal(open.records.find((r) => r.kind === 'dom').top[0].aria, 'Projekt rodinný rozpočet');
+});
