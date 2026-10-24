@@ -64,6 +64,10 @@ To update, unzip the new version over the old folder and click the reload button
 
 Load the repository folder with **Load unpacked** (Developer mode). Run the tests with `npm test` (Node 22, nothing to install).
 
+## For developers
+
+The branch [`debug/capture-diagnostics`](../../tree/debug/capture-diagnostics) holds two developer tools used to follow changes of the claude.ai interface: a recording of what claude.ai and its server exchange, and diagnostics of the saved usage. They are not part of the extension published here and are not meant for everyday use; the branch's own README describes them.
+
 ## Privacy
 
 - All data stays local — no external servers, no tracking
