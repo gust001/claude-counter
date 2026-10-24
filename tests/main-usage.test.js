@@ -472,3 +472,20 @@ test('M20 reload on the other id: the account is recognised through the saved al
 	assert.equal(second.lastUsage().five_hour.utilization, 20);
 	assert.equal(second.lastUsage().seven_day.utilization, 10);
 });
+
+test('M21 a short log of what persistence did is kept for the settings page, without content', async () => {
+	const env = await createMainEnv({ storage: orgStored, startMs: START, usage: emptyUsage });
+	await env.emit('cc:message_limit', limitsEvent(START));
+	await env.clock.flush();
+	await env.clock.advance(3500);
+	const debug = env.stored('ccDebug');
+	assert.ok(debug && Array.isArray(debug.log));
+	const events = debug.log.map((e) => e.event);
+	assert.ok(events.includes('limits') && events.includes('persist'), events.join(','));
+	for (const entry of debug.log) {
+		for (const value of Object.values(entry)) {
+			if (typeof value === 'string') assert.ok(value.length <= 40, value);
+		}
+	}
+	assert.ok(!JSON.stringify(debug).includes(ORG), 'ids are cut short');
+});

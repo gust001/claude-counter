@@ -40,6 +40,10 @@ function createBridgeEnv({ originalFetch, location } = {}) {
 		window,
 		messages,
 		documentElement,
+		/** The extension's capture client sets this flag; the bridge reads it on every request. */
+		setCapture(on) {
+			documentElement.dataset.ccCapture = on ? '1' : '0';
+		},
 		events(type) {
 			return messages.filter((m) => m && m.cc === 'ClaudeCounter' && m.type === type).map((m) => m.payload);
 		},

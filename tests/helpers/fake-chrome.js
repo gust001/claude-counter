@@ -1,6 +1,6 @@
 'use strict';
 
-// Minimal chrome.storage.local with onChanged, enough for the content scripts and main.js tests.
+// Minimal chrome.storage.local with onChanged, enough for the capture code and for main.js tests.
 
 function createFakeChrome(initial = {}) {
 	const data = { ...initial };
@@ -62,7 +62,7 @@ function createFakeChrome(initial = {}) {
 	};
 }
 
-/** Promise flavour of the storage calls. */
+/** Promise flavour used by CaptureStore. */
 function promiseStorage(fake) {
 	const area = fake.chrome.storage.local;
 	return {

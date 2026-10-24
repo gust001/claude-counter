@@ -60,6 +60,13 @@ To update, unzip the new version over the old folder and click the reload button
 - Where `/usage` reports nothing (free plan) the bars show "no data yet" until the first reply of a session brings the limits; an ended window shows 0%
 - Watches for DOM changes to inject UI elements as you navigate
 
+## Debug tools (this branch, for developers)
+
+This branch adds two tools used to develop against changes of the claude.ai interface. They are not part of the published extension; a developer who needs them can build this branch (**Load unpacked**) or copy the sources into their own.
+
+- **Traffic recording** (off by default): open the extension's settings (`chrome://extensions` → Claude Counter → Details → Extension options) to record what claude.ai and its server exchange. Message text and binary values are masked unless you switch masking off, and conversation ids in addresses are always replaced. A recording is kept in the browser (about 2.5 MB per page load, the newest three) until you download or delete it; deleting it stops open tabs from recording until they are reloaded. Masking is a best-effort heuristic: look at a file before you share it. The recording also stores where the chat title sits in the page and how the message box and the buttons around it are laid out.
+- **Diagnostics**: the same settings page lists what usage the extension saved (ids cut to eight characters, no message text) and a short log of saving and restoring. Use it when the usage bars say "no data yet" after a reload.
+
 ## Development
 
 Load the repository folder with **Load unpacked** (Developer mode). Run the tests with `npm test` (Node 22, nothing to install).
@@ -68,6 +75,7 @@ Load the repository folder with **Load unpacked** (Developer mode). Run the test
 
 - All data stays local — no external servers, no tracking
 - Reads your `lastActiveOrg` cookie (or the organisation id the page itself uses) to query Claude's `/usage` endpoint
+- Traffic recording is off unless you switch it on in the settings, and its data never leaves your browser unless you download it
 - Makes requests only to `claude.ai`
 
 ## Credits

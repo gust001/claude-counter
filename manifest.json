@@ -7,11 +7,17 @@
     "gecko": {
       "id": "{236c6889-52b6-4454-bc4b-5a2ad18effa2}",
       "strict_min_version": "142.0",
-      "data_collection_permissions": { "required": ["none"] }
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
     }
   },
   "description": "Shows ~token count, cache timer, and native session/weekly usage bars on claude.ai.",
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -32,14 +38,33 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["src/injected/bridge.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/content/capture-redact.js",
+        "src/content/capture-store.js",
+        "src/content/capture-client.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "src/injected/bridge.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start"
     },
     {
-      "matches": ["https://claude.ai/*"],
-      "css": ["src/styles.css"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "css": [
+        "src/styles.css"
+      ],
       "js": [
         "src/content/constants.js",
         "src/content/bridge-client.js",
@@ -52,8 +77,16 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/injected/bridge.js"],
-      "matches": ["https://claude.ai/*"]
+      "resources": [
+        "src/injected/bridge.js"
+      ],
+      "matches": [
+        "https://claude.ai/*"
+      ]
     }
-  ]
+  ],
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  }
 }

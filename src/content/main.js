@@ -17,6 +17,30 @@
 	function rememberOrg(id) {
 		if (typeof id === 'string' && id) knownOrgIds.add(id);
 	}
+	const shortId = (id) => (typeof id === 'string' ? id.slice(0, 8) : null);
+
+	// A short log of what the usage persistence did, kept in chrome.storage.local ("ccDebug") so that
+	// the settings page can show it. No message content, ids cut to eight characters.
+	const debugLog = [];
+	let debugTimer = null;
+	function dbg(event, info = {}) {
+		try {
+			debugLog.push({ at: new Date().toISOString().slice(11, 19), event, ...info });
+			if (debugLog.length > 40) debugLog.shift();
+			if (debugTimer || typeof chrome === 'undefined' || !chrome.storage?.local) return;
+			debugTimer = setTimeout(() => {
+				debugTimer = null;
+				try {
+					chrome.storage.local.set({ ccDebug: { savedAt: new Date().toISOString(), log: debugLog.slice() } });
+				} catch {
+					// ignore
+				}
+			}, 3000);
+		} catch {
+			// diagnostics must never get in the way
+		}
+	}
+
 	function getOrgIdFromCookie() {
 		try {
 			return document.cookie
@@ -269,9 +293,13 @@
 		try {
 			if (typeof chrome === 'undefined' || !chrome.storage?.local || !usageState) return;
 			const orgId = await getOrgId();
-			if (!orgId) return;
+			if (!orgId) {
+				dbg('persist', { ok: false, reason: 'no org' });
+				return;
+			}
 			const orgIds = Array.from(new Set([orgId, ...knownOrgIds])).slice(0, 4);
 			chrome.storage.local.set({ claude_usage_state: { orgId, orgIds, usage: usageState } });
+			dbg('persist', { ok: true, org: shortId(orgId), ids: orgIds.length, windows: USAGE_WINDOW_KEYS.filter((k) => usageState[k]).length });
 		} catch {
 			// ignore
 		}
@@ -298,7 +326,10 @@
 	async function restoreUsageIfNeeded() {
 		if (!usageMissing()) return true;
 		const orgId = await getOrgId();
-		if (!orgId) return false;
+		if (!orgId) {
+			dbg('restore', { ok: false, reason: 'no org' });
+			return false;
+		}
 		const now = Date.now();
 		if (lastRestore.org === orgId && now - lastRestore.at < 5000) return false;
 		lastRestore = { org: orgId, at: now };
@@ -307,13 +338,20 @@
 		const cached = entry?.usage;
 		const aliases = Array.isArray(entry?.orgIds) ? entry.orgIds : [];
 		const matches = !!entry && (entry.orgId === orgId || aliases.includes(orgId) || [...knownOrgIds].some((id) => id === entry.orgId || aliases.includes(id)));
-		if (!cached || !matches) return false;
+		if (!cached || !matches) {
+			dbg('restore', { ok: false, org: shortId(orgId), saved: shortId(entry?.orgId) || null, reason: !cached ? 'nothing saved' : 'other account' });
+			return false;
+		}
 		const fill = {};
 		for (const key of USAGE_WINDOW_KEYS) {
 			if ((!usageState || !usageState[key]) && cached[key]) fill[key] = cached[key];
 		}
-		if (!fill.five_hour && !fill.seven_day) return false;
+		if (!fill.five_hour && !fill.seven_day) {
+			dbg('restore', { ok: false, org: shortId(orgId), reason: 'snapshot has no window to add' });
+			return false;
+		}
 		applyUsageUpdate({ five_hour: fill.five_hour || null, seven_day: fill.seven_day || null }, 'cache');
+		dbg('restore', { ok: true, org: shortId(orgId), filled: Object.keys(fill) });
 		return true;
 	}
 
@@ -427,6 +465,7 @@
 
 	function handleMessageLimit(messageLimit) {
 		const parsed = parseUsageFromMessageLimit(messageLimit);
+		dbg('limits', { windows: parsed ? USAGE_WINDOW_KEYS.filter((k) => parsed[k]).length : 0 });
 		applyUsageUpdate(parsed, 'sse');
 	}
 
