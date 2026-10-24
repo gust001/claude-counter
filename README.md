@@ -23,24 +23,30 @@ claude.ai is moving accounts to a new unified interface, and an account can be s
 
 Both methods run side by side; whichever the page uses is picked up.
 
-## What's changed from upstream v0.4.2
+## What's new in 2.1.0 (the new unified claude.ai interface)
+
+Details in the [changelog](CHANGELOG.md).
+
+- **The new interface is supported**: the usage limits and the token count / cache timer are read from its `StreamTimeline` stream, next to the old `/completion` path; the bars move while a reply is still being generated
+- **Usage bars persist across page reloads, tab changes and extension updates**: the saved snapshot is matched against every organisation id the page uses and restored again when the id becomes known later
+- **0% and "no data yet" are told apart**: a window the server reports without a number is 0% (the server leaves a zero out), a window that was never reported says "no data yet"
+- **A window that ended resets**: it shows 0% without the old value and a "resets in 0s" countdown, and fresh data is asked for at once
+- **The token count and cache timer sit on a second line under the start of the chat title**, inside the title bar (the bar keeps its height), instead of squeezing the title or covering the chat; if the title is not found they stay above the usage bars
+- `/usage` is no longer asked every second on plans where it reports nothing (free plan); failed requests back off up to an hour
+- A limits event that the server sends again after the stream was re-opened is not counted as a new reply (it would restart the cache timer without any work)
+- A chat whose parent links form a loop no longer hangs the token count
+- Tests: `npm test` (Node 22, no dependencies)
+
+## What's changed in 2.0.x (from upstream v0.4.2)
+
+The update for the August 2026 claude.ai redesign, by [hey-naf](https://github.com/hey-naf/claude-counter):
 
 - Fixed broken selectors after claude.ai's UI redesign (`chat-title-split`, `bg-surface-3`)
 - Usage bars now render inside the rounded composer box
-- Bars persist across page refreshes via `chrome.storage.local`
-- Bars always visible with 0% fallback (free plan returns nulls until first message)
+- Bars persist across page refreshes via `chrome.storage.local` (2.1.0 extends this, see above)
+- Bars always visible with 0% fallback (free plan returns nulls until first message; 2.1.0 tells 0% from "no data yet")
 - Org-scoped usage snapshot with expired-window cleanup
 - Version bumped to 2.0.2 with resilient DOM anchoring, direct fetch fallbacks, and CSP compatibility
-- 2.1.0, support for the new unified interface (details in the [changelog](CHANGELOG.md)):
-  - The usage limits and the token count / cache timer are read from the new interface's `StreamTimeline` stream; the bars move while a reply is still being generated
-  - **Usage bars persist across page reloads, tab changes and extension updates**: the saved snapshot is matched against every organisation id the page uses and restored again when the id becomes known later
-  - **0% and "no data yet" are told apart**: a window the server reports without a number is 0% (the server leaves a zero out), a window that was never reported says "no data yet"
-  - **A window that ended resets**: it shows 0% without the old value and a "resets in 0s" countdown, and fresh data is asked for at once
-  - **The token count and cache timer sit on a second line under the start of the chat title**, inside the title bar (the bar keeps its height), instead of squeezing the title or covering the chat; if the title is not found they stay above the usage bars
-  - `/usage` is no longer asked every second on plans where it reports nothing (free plan); failed requests back off up to an hour
-  - A limits event that the server sends again after the stream was re-opened is not counted as a new reply (it would restart the cache timer without any work)
-  - A chat whose parent links form a loop no longer hangs the token count
-  - Tests: `npm test` (Node 22, no dependencies)
 
 ## Installation
 
