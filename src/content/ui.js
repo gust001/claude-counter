@@ -16,6 +16,15 @@
 		return `${minutes}:${String(seconds).padStart(2, '0')}`;
 	}
 
+	/** HH:MM, with the day in front when it is not today. */
+	function formatClockTime(ms) {
+		const d = new Date(ms);
+		const clock = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+		const today = new Date();
+		if (d.toDateString() === today.toDateString()) return clock;
+		return `${d.getDate()}.${d.getMonth() + 1}. ${clock}`;
+	}
+
 	function formatResetCountdown(timestampMs) {
 		// <= 0: reset time reached
 		const diffMs = timestampMs - Date.now();
@@ -127,8 +136,10 @@
 	const hasElementChild = (el) => Array.from(el.children || []).some((c) => c && c.nodeType === 1);
 
 	class CounterUI {
-		constructor({ onUsageRefresh } = {}) {
+		constructor({ onUsageRefresh, onAutoCancel } = {}) {
 			this.onUsageRefresh = onUsageRefresh || null;
+			this.onAutoCancel = onAutoCancel || null;
+			this.autoChip = null;
 
 			this.headerContainer = null;
 			this.headerDisplay = null;
@@ -338,6 +349,44 @@
 					this.refreshingUsage = false;
 				}
 			});
+		}
+
+		/**
+		 * Auto-continue indicator at the end of the usage row: shown only while a message is planned for
+		 * this chat; a click cancels the plan. status: { fireAt, what, again } or null.
+		 */
+		setAutoContinue(status) {
+			if (!this.usageLine) return;
+			if (!status) {
+				if (this.autoChip) {
+					this.autoChip.remove();
+					this.autoChip = null;
+				}
+				return;
+			}
+			if (!this.autoChip) {
+				const chip = document.createElement('span');
+				chip.className = 'cc-autoChip';
+				chip.setAttribute('role', 'button');
+				chip.setAttribute('tabindex', '0');
+				const cancel = (event) => {
+					event.stopPropagation();
+					if (event.preventDefault) event.preventDefault();
+					if (this.onAutoCancel) this.onAutoCancel();
+				};
+				chip.addEventListener('click', cancel);
+				chip.addEventListener('keydown', (event) => {
+					if (event.key === 'Enter' || event.key === ' ') cancel(event);
+				});
+				this.autoChip = chip;
+			}
+			const when = formatClockTime(status.fireAt);
+			const what = status.what === 'composer' ? 'your message' : '"continue"';
+			const again = status.again ? ' again' : '';
+			this.autoChip.textContent = `\u21bb ${when} \u2715`;
+			this.autoChip.setAttribute('title', `Auto-continue: sends ${what}${again} to this chat at ${when}.\nClick to cancel.`);
+			this.autoChip.setAttribute('aria-label', `Auto-continue planned for ${when}. Click to cancel.`);
+			if (this.autoChip.parentElement !== this.usageLine) this.usageLine.appendChild(this.autoChip);
 		}
 
 		_setupTooltips() {

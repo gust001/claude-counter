@@ -462,6 +462,55 @@ test('U27 a header that is still empty is not placed by the title; it moves unde
 	assert.equal(text.nextElementSibling, env.ui.headerContainer);
 });
 
+test('U28 auto-continue indicator: shown at the end of the usage row with the time, removed when the plan is gone', () => {
+	const env = createUiEnv();
+	env.ui.setAutoContinue({ fireAt: new env.clock.Date(START).setHours(23, 5, 0, 0), what: 'continue' });
+	const chip = env.ui.autoChip;
+	assert.ok(chip);
+	assert.equal(chip.parentElement, env.ui.usageLine);
+	assert.equal(env.ui.usageLine.lastElementChild, chip);
+	assert.match(chip.textContent, /23:05/);
+	assert.match(chip.getAttribute('title'), /"continue"/);
+	assert.match(chip.getAttribute('title'), /cancel/i);
+
+	env.ui.setAutoContinue({ fireAt: new env.clock.Date(START).setHours(23, 5, 0, 0), what: 'composer' });
+	assert.equal(env.ui.autoChip, chip, 'the same element is updated');
+	assert.match(chip.getAttribute('title'), /your message/);
+
+	env.ui.setAutoContinue(null);
+	assert.equal(env.ui.autoChip, null);
+	assert.equal(env.ui.usageLine.children.includes(chip), false);
+});
+
+test('U29 clicking the indicator cancels the plan and does not refresh the usage', () => {
+	const env = createUiEnv();
+	env.ui.setAutoContinue({ fireAt: START + HOUR, what: 'continue' });
+	let stopped = false;
+	env.ui.autoChip.listeners.click[0]({ stopPropagation: () => (stopped = true), preventDefault() {} });
+	assert.equal(stopped, true, 'the click must not reach the row, which refreshes the usage');
+	assert.equal(env.cancels.length, 1);
+	assert.equal(env.refreshes.length, 0);
+});
+
+test('U30 the keyboard cancels too (Enter, Space), other keys do not', () => {
+	const env = createUiEnv();
+	env.ui.setAutoContinue({ fireAt: START + HOUR, what: 'continue' });
+	const press = (key) => env.ui.autoChip.listeners.keydown[0]({ key, stopPropagation() {}, preventDefault() {} });
+	press('a');
+	assert.equal(env.cancels.length, 0);
+	press('Enter');
+	press(' ');
+	assert.equal(env.cancels.length, 2);
+});
+
+test('U31 a plan for another day shows the date in front of the time', () => {
+	const env = createUiEnv();
+	env.ui.setAutoContinue({ fireAt: START + 36 * HOUR, what: 'continue' });
+	assert.match(env.ui.autoChip.textContent, /\d{1,2}\.\d{1,2}\. \d{2}:\d{2}/);
+	env.ui.setAutoContinue({ fireAt: START + HOUR, what: 'continue' });
+	assert.doesNotMatch(env.ui.autoChip.textContent, /\d\.\d+\. /);
+});
+
 // ---- header under the title: always, whatever the width of the page or of the header ----
 
 test('U32 the header goes under the title, out of the row, at the start of the title text', () => {

@@ -10,6 +10,14 @@
 		return match ? match[1] : null;
 	}
 
+	// Where auto-continue can act: a chat (its id) or the new-chat page (CC.autoContinueCore.NEW_CHAT).
+	function getAutoTarget() {
+		const id = getConversationId();
+		if (id) return id;
+		const core = CC.autoContinueCore;
+		return core && /^\/(new\/?)?$/.test(window.location.pathname) ? core.NEW_CHAT : null;
+	}
+
 	// Every organisation id this page has resolved or seen in the page's own requests. A saved usage
 	// snapshot is matched against any of them, because the id found at start-up (cookie, list of
 	// organisations) is not always the one the page's requests use.
@@ -208,9 +216,20 @@
 	const ui = new CC.ui.CounterUI({
 		onUsageRefresh: async () => {
 			await refreshUsage();
+		},
+		onAutoCancel: () => {
+			if (autoContinue) autoContinue.cancel().catch(() => {});
 		}
 	});
 	ui.initialize();
+
+	// Optional: send a message after the usage limit has reset. Inactive unless switched on in the settings.
+	const autoContinue = CC.autoContinue
+		? CC.autoContinue.create({
+				getChatId: getAutoTarget,
+				onStatus: (status) => ui.setAutoContinue(status)
+			})
+		: null;
 
 	// Bridge must be ready before we can make requests
 	const bridgeReady = CC.injectBridgeOnce();
@@ -254,6 +273,7 @@
 		}
 		if (source !== 'cache') persistUsage();
 		ui.setUsage(usageState);
+		if (autoContinue) autoContinue.noteUsage(usageState, source);
 	}
 
 	function updateOrgIdIfNeeded(newOrgId) {
@@ -492,6 +512,7 @@
 		if (!(await isExtensionEnabled())) return;
 
 		currentConversationId = getConversationId();
+		if (autoContinue) autoContinue.setChat(getAutoTarget());
 
 		// Attach immediately if elements already exist
 		ui.attachUsageLine();
@@ -571,6 +592,7 @@
 
 	function tick() {
 		ui.tick();
+		if (autoContinue) autoContinue.tick();
 
 		const now = Date.now();
 

@@ -60,6 +60,12 @@ To update, unzip the new version over the old folder and click the reload button
 - Where `/usage` reports nothing (free plan) the bars show "no data yet" until the first reply of a session brings the limits; an ended window shows 0%
 - Watches for DOM changes to inject UI elements as you navigate
 
+## Auto-continue (this branch, experimental)
+
+Auto-continue can send one message into a chat at a moment you choose, for example when the 5-hour usage window has ended. It is off by default, it switches itself off after sending, and its settings are in the extension's options and in the popup of the toolbar icon.
+
+It is not part of the published extension. Sending messages automatically may conflict with the terms of service of claude.ai (Anthropic's Consumer Terms restrict access to the service through automated means). If you build and use it, you do so at your own risk and responsibility; the code is provided as is.
+
 ## Development
 
 Load the repository folder with **Load unpacked** (Developer mode). Run the tests with `npm test` (Node 22, nothing to install).

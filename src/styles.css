@@ -125,3 +125,20 @@
 .cc-hidden {
 	display: none !important;
 }
+
+/* Auto-continue indicator at the end of the usage row */
+.cc-autoChip {
+	flex: none;
+	margin-left: auto;
+	padding: 0 6px;
+	border: 1px solid currentColor;
+	border-radius: 999px;
+	opacity: 0.8;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.cc-autoChip:hover,
+.cc-autoChip:focus-visible {
+	opacity: 1;
+}

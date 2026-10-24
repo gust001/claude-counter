@@ -15,7 +15,7 @@ function clone(value) {
 
 async function createMainEnv({ storage = {}, pathname = `/chat/${CONV}`, cookie = '', usage, conversations = {}, startMs } = {}) {
 	const clock = createClock(startMs);
-	const calls = { setUsage: [], setMetrics: [], titles: [], pending: [], uiOpts: null, usageRequests: [], conversationRequests: [] };
+	const calls = { setUsage: [], setMetrics: [], titles: [], pending: [], auto: [], uiOpts: null, usageRequests: [], conversationRequests: [] };
 	const handlers = {};
 
 	// What the bridge answers. Tests replace these.
@@ -69,6 +69,9 @@ async function createMainEnv({ storage = {}, pathname = `/chat/${CONV}`, cookie 
 		setConversationTitle(name) {
 			calls.titles.push(name);
 		}
+		setAutoContinue(status) {
+			calls.auto.push(clone(status));
+		}
 	}
 
 	const tokens = {
@@ -86,7 +89,7 @@ async function createMainEnv({ storage = {}, pathname = `/chat/${CONV}`, cookie 
 	};
 
 	const env = createContentEnv({
-		files: ['content/constants.js'],
+		files: ['content/constants.js', 'content/autocontinue-core.js', 'content/autocontinue.js'],
 		storage,
 		pathname,
 		extraGlobals: {

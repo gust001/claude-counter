@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Claude Counter settings</title>
+	<style>
+		:root { color-scheme: light dark; --bd: #8884; --muted: #888; }
+		body { font: 14px/1.5 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+		h1 { font-size: 1.4rem; }
+		h2 { font-size: 1.1rem; margin-top: 2rem; }
+		label { display: block; margin: .5rem 0; }
+		.hint { color: var(--muted); font-size: 13px; margin: .25rem 0 .75rem 1.6rem; }
+		table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+		th, td { border-bottom: 1px solid var(--bd); padding: .35rem .5rem; text-align: left; font-size: 13px; }
+		td.num, th.num { text-align: right; }
+		button { font: inherit; padding: .35rem .8rem; margin-right: .4rem; cursor: pointer; }
+		.status { margin: .75rem 0; padding: .5rem .75rem; border: 1px solid var(--bd); border-radius: 6px; }
+		.on { border-color: #c60; }
+		.empty { color: var(--muted); }
+		.group { margin: .6rem 0 .6rem 1.6rem; }
+		.groupTitle { font-weight: 600; margin-bottom: .1rem; }
+		.autoBody { margin-left: 1.6rem; }
+		.autoBody.disabled { opacity: .55; }
+		.autoBody .group { margin-left: 0; }
+		.autoBody .hint { margin-left: 0; }
+		.atRow { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: .2rem 0 .4rem 1.6rem; }
+		input.num { width: 4.5em; }
+		input.wide { width: 14em; }
+	</style>
+</head>
+<body>
+	<h1>Claude Counter</h1>
+
+	<h2>Auto-continue</h2>
+	<p>
+		Claude Counter can send one message into a chat for you at a moment you choose: relative to the end of
+		the 5-hour usage window (also before it), or at a fixed time, for example outside the busy hours. It
+		sends the text "continue", or whatever is in the message box. Switch it on in the chat you want to
+		continue in; it switches itself off after sending. The same settings are in the popup of the toolbar icon.
+	</p>
+	<div id="autoForm"></div>
+
+	<script src="../src/content/autocontinue-core.js"></script>
+	<script src="auto-form.js"></script>
+	<script src="options.js"></script>
+</body>
+</html>

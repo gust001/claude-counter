@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<title>Claude Counter</title>
+	<style>
+		:root { color-scheme: light dark; --bd: #8884; --muted: #888; }
+		body { font: 13px/1.45 system-ui, sans-serif; width: 340px; margin: 0; padding: 12px; box-sizing: border-box; }
+		h1 { font-size: 1rem; margin: 0 0 .5rem; }
+		label { display: block; margin: .35rem 0; }
+		.hint { color: var(--muted); font-size: 12px; margin: .35rem 0; }
+		.group { margin: .5rem 0; }
+		.groupTitle { font-weight: 600; }
+		.status { margin: .6rem 0; padding: .4rem .6rem; border: 1px solid var(--bd); border-radius: 6px; }
+		.autoBody.disabled { opacity: .55; }
+		.atRow { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; margin: .2rem 0 .4rem 1.4rem; }
+		input.num { width: 4em; }
+		input.wide { width: 11em; }
+		button { font: inherit; padding: .25rem .7rem; cursor: pointer; }
+		.more { margin-top: .6rem; }
+		.more a { cursor: pointer; color: inherit; text-decoration: underline; }
+	</style>
+</head>
+<body>
+	<h1>Claude Counter: auto-continue</h1>
+	<div id="autoForm"></div>
+	<div class="more"><a id="openOptions">All settings</a></div>
+
+	<script src="../src/content/autocontinue-core.js"></script>
+	<script src="../options/auto-form.js"></script>
+	<script src="popup.js"></script>
+</body>
+</html>

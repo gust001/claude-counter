@@ -17,6 +17,7 @@ function createUiEnv({ startMs = START } = {}) {
 	const clock = createClock(startMs);
 	const fake = createFakeChrome();
 	const refreshes = [];
+	const cancels = [];
 
 	const window = {
 		innerWidth: 1280,
@@ -59,11 +60,14 @@ function createUiEnv({ startMs = START } = {}) {
 	const ui = new CC.ui.CounterUI({
 		onUsageRefresh: async () => {
 			refreshes.push(clock.now);
+		},
+		onAutoCancel: () => {
+			cancels.push(clock.now);
 		}
 	});
 	ui.initialize();
 
-	return { ui, CC, dom, clock, document: dom.document, refreshes, storageData: fake.data };
+	return { ui, CC, dom, clock, document: dom.document, refreshes, cancels, storageData: fake.data };
 }
 
 function iso(ms) {
