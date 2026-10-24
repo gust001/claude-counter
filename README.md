@@ -73,6 +73,7 @@ Load the repository folder with **Load unpacked** (Developer mode). Run the test
 ## Credits
 
 - Original project by [she-llac](https://github.com/she-llac/claude-counter) (MIT)
+- The 2.0.x update for the August 2026 claude.ai redesign comes from [hey-naf](https://github.com/hey-naf/claude-counter)'s fork (v2.0.2), which 2.1.0 builds on
 - Token counting via [gpt-tokenizer](https://github.com/niieani/gpt-tokenizer) (MIT)
 - Inspired by [Claude Usage Tracker](https://github.com/lugia19/Claude-Usage-Extension) by lugia19
 
